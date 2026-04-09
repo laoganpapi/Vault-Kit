@@ -79,25 +79,25 @@ contract DeployScript is Script {
         // ─── 5. Queue Strategy Additions via Timelock ───
         uint256 eta = block.timestamp + 24 hours + 1;
 
-        // Queue: addStrategy(aaveLev, 7500) — 75% allocation
+        // Queue: addStrategy(aaveLev, 8500) — 85% allocation
         timelock.queueTransaction(
             address(vault),
             0,
             "addStrategy(address,uint256)",
-            abi.encode(address(aaveLev), 7500),
+            abi.encode(address(aaveLev), 8500),
             eta
         );
-        console2.log("Queued AaveLeverage addition (75%) for ETA:", eta);
+        console2.log("Queued AaveLeverage addition (85%) for ETA:", eta);
 
-        // Queue: addStrategy(aaveSupply, 2500) — 25% allocation
+        // Queue: addStrategy(aaveSupply, 1500) — 15% allocation (liquidity buffer)
         timelock.queueTransaction(
             address(vault),
             0,
             "addStrategy(address,uint256)",
-            abi.encode(address(aaveSupply), 2500),
+            abi.encode(address(aaveSupply), 1500),
             eta
         );
-        console2.log("Queued AaveSupply addition (25%) for ETA:", eta);
+        console2.log("Queued AaveSupply addition (15%) for ETA:", eta);
 
         vm.stopBroadcast();
 

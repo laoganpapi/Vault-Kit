@@ -27,19 +27,19 @@ contract AddStrategyScript is Script {
             vaultAddr,
             0,
             "addStrategy(address,uint256)",
-            abi.encode(aaveLev, 7500),
+            abi.encode(aaveLev, 8500),
             eta
         );
-        console2.log("AaveLeverageStrategy activated (75%)");
+        console2.log("AaveLeverageStrategy activated (85%)");
 
         timelock.executeTransaction(
             vaultAddr,
             0,
             "addStrategy(address,uint256)",
-            abi.encode(aaveSupply, 2500),
+            abi.encode(aaveSupply, 1500),
             eta
         );
-        console2.log("AaveSupplyStrategy activated (25%)");
+        console2.log("AaveSupplyStrategy activated (15%)");
 
         vm.stopBroadcast();
         console2.log("All strategies active. Vault is ready for deposits.");
