@@ -1,12 +1,24 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.20;
 
 /**
  * @title ArbitrumVault
- * @notice Yield-bearing vault on Arbitrum that accepts ETH deposits,
+ * @notice Yield-bearing vault on Arbitrum that accepts ERC-20 deposits,
  *         deploys capital to yield strategies, and distributes rewards.
  *         Follows ERC-4626-inspired share-based accounting.
+ *
+ * Security features:
+ *   - ReentrancyGuard on all state-mutating external-call functions
+ *   - SafeERC20 for all token interactions
+ *   - Checks-Effects-Interactions pattern throughout
+ *   - Chainlink oracle with staleness, price, and round validation
+ *   - Fee caps to prevent owner abuse
+ *   - Zero-address validation on all address setters
+ *   - Events on every state change
+ *   - Two-step ownership transfer
  */
+
+// ============ Interfaces ============
 
 interface IERC20 {
     function totalSupply() external view returns (uint256);
@@ -34,29 +46,72 @@ interface AggregatorV3Interface {
     );
 }
 
+// ============ SafeERC20 (inline to avoid import dependency) ============
+
+library SafeERC20 {
+    function safeTransfer(IERC20 token, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = address(token).call(
+            abi.encodeWithSelector(token.transfer.selector, to, amount)
+        );
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: transfer failed");
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = address(token).call(
+            abi.encodeWithSelector(token.transferFrom.selector, from, to, amount)
+        );
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: transferFrom failed");
+    }
+
+    function safeApprove(IERC20 token, address spender, uint256 amount) internal {
+        // Reset to 0 first to handle non-standard tokens (e.g., USDT)
+        (bool success, bytes memory data) = address(token).call(
+            abi.encodeWithSelector(token.approve.selector, spender, 0)
+        );
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: approve failed");
+
+        if (amount > 0) {
+            (success, data) = address(token).call(
+                abi.encodeWithSelector(token.approve.selector, spender, amount)
+            );
+            require(success && (data.length == 0 || abi.decode(data, (bool))), "SafeERC20: approve failed");
+        }
+    }
+}
+
 contract ArbitrumVault {
+    using SafeERC20 for IERC20;
+
+    // ============ Constants & Caps ============
+
+    uint8 public constant decimals = 18;
+    uint256 public constant MAX_PERFORMANCE_FEE = 3000;   // 30%
+    uint256 public constant MAX_WITHDRAWAL_FEE = 500;     // 5%
+    uint256 public constant MAX_MANAGEMENT_FEE = 500;     // 5%
+    uint256 public constant MAX_ORACLE_STALENESS = 3600;  // 1 hour
+    uint256 public constant MAX_WITHDRAWAL_DELAY = 7 days;
+
     // ============ State Variables ============
 
     string public name;
     string public symbol;
-    uint8 public constant decimals = 18;
 
     address public owner;
     address public guardian;
     address public pendingOwner;
 
-    IERC20 public asset;                    // Underlying token (e.g., WETH)
-    IStrategy public strategy;              // Active yield strategy
-    AggregatorV3Interface public priceFeed;  // Chainlink price feed
+    IERC20 public immutable asset;
+    IStrategy public strategy;
+    AggregatorV3Interface public immutable priceFeed;
 
     mapping(address => uint256) public shares;
     uint256 public totalShares;
     uint256 public totalAssets;
 
     // Fee configuration
-    uint256 public performanceFee;    // Basis points (e.g., 1000 = 10%)
-    uint256 public withdrawalFee;     // Basis points
-    uint256 public managementFee;     // Basis points per year
+    uint256 public performanceFee;
+    uint256 public withdrawalFee;
+    uint256 public managementFee;
     address public feeRecipient;
     uint256 public lastFeeCollection;
 
@@ -66,12 +121,16 @@ contract ArbitrumVault {
     uint256 public depositCap;
     uint256 public minDeposit;
     mapping(address => uint256) public lastDepositTime;
-    uint256 public withdrawalDelay;   // seconds
+    uint256 public withdrawalDelay;
 
     // Whitelisting
     bool public whitelistEnabled;
     mapping(address => bool) public whitelist;
-    address[] public whitelistedAddresses;
+
+    // Reentrancy guard
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _reentrancyStatus = _NOT_ENTERED;
 
     // ============ Events ============
 
@@ -82,6 +141,19 @@ contract ArbitrumVault {
     event FeesCollected(uint256 amount);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
+    event EmergencyModeSet(bool enabled);
+    event PerformanceFeeUpdated(uint256 oldFee, uint256 newFee);
+    event WithdrawalFeeUpdated(uint256 oldFee, uint256 newFee);
+    event ManagementFeeUpdated(uint256 oldFee, uint256 newFee);
+    event DepositCapUpdated(uint256 oldCap, uint256 newCap);
+    event MinDepositUpdated(uint256 oldMin, uint256 newMin);
+    event WithdrawalDelayUpdated(uint256 oldDelay, uint256 newDelay);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event GuardianUpdated(address indexed oldGuardian, address indexed newGuardian);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event WhitelistUpdated(address indexed account, bool status);
+    event WhitelistEnabledUpdated(bool enabled);
 
     // ============ Modifiers ============
 
@@ -105,6 +177,13 @@ contract ArbitrumVault {
         _;
     }
 
+    modifier nonReentrant() {
+        require(_reentrancyStatus != _ENTERED, "ReentrancyGuard: reentrant call");
+        _reentrancyStatus = _ENTERED;
+        _;
+        _reentrancyStatus = _NOT_ENTERED;
+    }
+
     // ============ Constructor ============
 
     constructor(
@@ -114,6 +193,10 @@ contract ArbitrumVault {
         address _priceFeed,
         address _feeRecipient
     ) {
+        require(_asset != address(0), "Zero asset address");
+        require(_priceFeed != address(0), "Zero oracle address");
+        require(_feeRecipient != address(0), "Zero fee recipient");
+
         name = _name;
         symbol = _symbol;
         owner = msg.sender;
@@ -133,7 +216,7 @@ contract ArbitrumVault {
 
     // ============ Deposit / Withdraw ============
 
-    function deposit(uint256 amount) external whenNotPaused whenNotEmergency {
+    function deposit(uint256 amount) external nonReentrant whenNotPaused whenNotEmergency {
         require(amount >= minDeposit, "Below minimum");
         require(totalAssets + amount <= depositCap, "Cap exceeded");
 
@@ -141,62 +224,66 @@ contract ArbitrumVault {
             require(whitelist[msg.sender], "Not whitelisted");
         }
 
-        // Calculate shares
+        // Calculate shares (round down in favor of vault)
         uint256 sharesToMint;
         if (totalShares == 0) {
             sharesToMint = amount;
         } else {
+            require(totalAssets != 0, "totalAssets is zero");
             sharesToMint = (amount * totalShares) / totalAssets;
         }
+        require(sharesToMint != 0, "Zero shares minted");
 
-        // Transfer assets
-        asset.transferFrom(msg.sender, address(this), amount);
-
-        // Update state
+        // CEI: Effects before interactions
         shares[msg.sender] += sharesToMint;
         totalShares += sharesToMint;
         totalAssets += amount;
         lastDepositTime[msg.sender] = block.timestamp;
 
+        // Interaction: transfer assets from user
+        asset.safeTransferFrom(msg.sender, address(this), amount);
+
         emit Deposit(msg.sender, amount, sharesToMint);
     }
 
-    function withdraw(uint256 shareAmount) external whenNotPaused {
+    function withdraw(uint256 shareAmount) external nonReentrant whenNotPaused {
+        require(shareAmount != 0, "Zero shares");
         require(shares[msg.sender] >= shareAmount, "Insufficient shares");
         require(
             block.timestamp >= lastDepositTime[msg.sender] + withdrawalDelay,
             "Withdrawal delay"
         );
+        require(totalShares != 0, "No shares outstanding");
 
-        // Calculate assets
+        // Calculate assets (round down in favor of vault)
         uint256 assetAmount = (shareAmount * totalAssets) / totalShares;
+        require(assetAmount != 0, "Zero assets");
 
-        // Apply withdrawal fee
+        // Calculate withdrawal fee
         uint256 fee = (assetAmount * withdrawalFee) / 10000;
         uint256 netAmount = assetAmount - fee;
 
-        // Update state
+        // CEI: Effects BEFORE interactions
         shares[msg.sender] -= shareAmount;
         totalShares -= shareAmount;
         totalAssets -= assetAmount;
 
-        // Transfer fee
+        // Interactions: transfers AFTER all state changes
         if (fee > 0) {
-            asset.transfer(feeRecipient, fee);
+            asset.safeTransfer(feeRecipient, fee);
         }
-
-        // Transfer assets to user
-        asset.transfer(msg.sender, netAmount);
+        asset.safeTransfer(msg.sender, netAmount);
 
         emit Withdraw(msg.sender, netAmount, shareAmount);
     }
 
     // ============ Strategy Management ============
 
-    function setStrategy(address _strategy) external onlyOwner {
+    function setStrategy(address _strategy) external nonReentrant onlyOwner {
+        require(_strategy != address(0), "Zero strategy address");
         address oldStrategy = address(strategy);
 
-        // Withdraw from old strategy
+        // Withdraw from old strategy first
         if (oldStrategy != address(0)) {
             uint256 balance = strategy.balanceOf();
             if (balance > 0) {
@@ -204,54 +291,68 @@ contract ArbitrumVault {
             }
         }
 
+        // Update state
         strategy = IStrategy(_strategy);
 
         // Deposit into new strategy
         uint256 available = asset.balanceOf(address(this));
         if (available > 0) {
-            asset.approve(_strategy, available);
+            asset.safeApprove(IERC20(address(asset)), _strategy, available);
             strategy.deposit(available);
         }
 
         emit StrategyUpdated(oldStrategy, _strategy);
     }
 
-    function deployToStrategy(uint256 amount) external onlyOwner whenNotPaused {
+    function deployToStrategy(uint256 amount) external nonReentrant onlyOwner whenNotPaused {
         require(address(strategy) != address(0), "No strategy");
-        asset.approve(address(strategy), amount);
+        require(amount != 0, "Zero amount");
+        asset.safeApprove(IERC20(address(asset)), address(strategy), amount);
         strategy.deposit(amount);
     }
 
-    function withdrawFromStrategy(uint256 amount) external onlyOwner {
+    function withdrawFromStrategy(uint256 amount) external nonReentrant onlyOwner {
         require(address(strategy) != address(0), "No strategy");
+        require(amount != 0, "Zero amount");
         strategy.withdraw(amount);
     }
 
     // ============ Harvest & Fees ============
 
-    function harvest() external onlyGuardian whenNotPaused {
+    function harvest() external nonReentrant onlyGuardian whenNotPaused {
         require(address(strategy) != address(0), "No strategy");
 
         uint256 profit = strategy.harvest();
 
         if (profit > 0) {
             uint256 fee = (profit * performanceFee) / 10000;
-            if (fee > 0) {
-                asset.transfer(feeRecipient, fee);
-            }
+
+            // CEI: update state BEFORE transfers
             totalAssets += profit - fee;
+
+            // Interaction: transfer fee after state update
+            if (fee > 0) {
+                asset.safeTransfer(feeRecipient, fee);
+            }
+
             emit Harvested(profit, fee);
         }
     }
 
-    function collectManagementFees() external onlyOwner {
+    function collectManagementFees() external nonReentrant onlyOwner {
         uint256 elapsed = block.timestamp - lastFeeCollection;
+        require(elapsed > 0, "No time elapsed");
+
         uint256 fee = (totalAssets * managementFee * elapsed) / (10000 * 365 days);
 
         if (fee > 0 && fee < totalAssets) {
+            // CEI: all state changes BEFORE transfer
             totalAssets -= fee;
-            asset.transfer(feeRecipient, fee);
             lastFeeCollection = block.timestamp;
+
+            // Interaction
+            asset.safeTransfer(feeRecipient, fee);
+
             emit FeesCollected(fee);
         }
     }
@@ -259,8 +360,24 @@ contract ArbitrumVault {
     // ============ Price Feed ============
 
     function getAssetPrice() public view returns (uint256) {
-        (, int256 price,,,) = priceFeed.latestRoundData();
-        return uint256(price);
+        (
+            uint80 roundId,
+            int256 answer,
+            ,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        ) = priceFeed.latestRoundData();
+
+        // Validate price is positive
+        require(answer > 0, "Oracle: invalid price");
+
+        // Validate staleness
+        require(block.timestamp - updatedAt <= MAX_ORACLE_STALENESS, "Oracle: stale price");
+
+        // Validate round completeness
+        require(answeredInRound >= roundId, "Oracle: round not complete");
+
+        return uint256(answer);
     }
 
     function getTotalValueUSD() external view returns (uint256) {
@@ -282,68 +399,102 @@ contract ArbitrumVault {
 
     function setEmergencyMode(bool _emergency) external onlyOwner {
         emergencyMode = _emergency;
+        emit EmergencyModeSet(_emergency);
     }
 
     function setPerformanceFee(uint256 _fee) external onlyOwner {
+        require(_fee <= MAX_PERFORMANCE_FEE, "Fee exceeds maximum");
+        uint256 oldFee = performanceFee;
         performanceFee = _fee;
+        emit PerformanceFeeUpdated(oldFee, _fee);
     }
 
     function setWithdrawalFee(uint256 _fee) external onlyOwner {
+        require(_fee <= MAX_WITHDRAWAL_FEE, "Fee exceeds maximum");
+        uint256 oldFee = withdrawalFee;
         withdrawalFee = _fee;
+        emit WithdrawalFeeUpdated(oldFee, _fee);
     }
 
     function setManagementFee(uint256 _fee) external onlyOwner {
+        require(_fee <= MAX_MANAGEMENT_FEE, "Fee exceeds maximum");
+        uint256 oldFee = managementFee;
         managementFee = _fee;
+        emit ManagementFeeUpdated(oldFee, _fee);
     }
 
     function setDepositCap(uint256 _cap) external onlyOwner {
+        uint256 oldCap = depositCap;
         depositCap = _cap;
+        emit DepositCapUpdated(oldCap, _cap);
     }
 
     function setMinDeposit(uint256 _min) external onlyOwner {
+        uint256 oldMin = minDeposit;
         minDeposit = _min;
+        emit MinDepositUpdated(oldMin, _min);
     }
 
     function setWithdrawalDelay(uint256 _delay) external onlyOwner {
+        require(_delay <= MAX_WITHDRAWAL_DELAY, "Delay exceeds maximum");
+        uint256 oldDelay = withdrawalDelay;
         withdrawalDelay = _delay;
+        emit WithdrawalDelayUpdated(oldDelay, _delay);
     }
 
     function setFeeRecipient(address _recipient) external onlyOwner {
+        require(_recipient != address(0), "Zero address");
+        address oldRecipient = feeRecipient;
         feeRecipient = _recipient;
+        emit FeeRecipientUpdated(oldRecipient, _recipient);
     }
 
     function setGuardian(address _guardian) external onlyOwner {
+        require(_guardian != address(0), "Zero address");
+        address oldGuardian = guardian;
         guardian = _guardian;
+        emit GuardianUpdated(oldGuardian, _guardian);
     }
 
     function transferOwnership(address _newOwner) external onlyOwner {
+        require(_newOwner != address(0), "Zero address");
         pendingOwner = _newOwner;
+        emit OwnershipTransferStarted(owner, _newOwner);
     }
 
     function acceptOwnership() external {
         require(msg.sender == pendingOwner, "Not pending owner");
+        address oldOwner = owner;
         owner = pendingOwner;
         pendingOwner = address(0);
+        emit OwnershipTransferred(oldOwner, msg.sender);
     }
 
     function setWhitelistEnabled(bool _enabled) external onlyOwner {
         whitelistEnabled = _enabled;
+        emit WhitelistEnabledUpdated(_enabled);
     }
 
     function addToWhitelist(address[] calldata _addresses) external onlyOwner {
         for (uint256 i = 0; i < _addresses.length; i++) {
+            require(_addresses[i] != address(0), "Zero address");
             whitelist[_addresses[i]] = true;
-            whitelistedAddresses.push(_addresses[i]);
+            emit WhitelistUpdated(_addresses[i], true);
         }
     }
 
     function removeFromWhitelist(address _address) external onlyOwner {
         whitelist[_address] = false;
+        emit WhitelistUpdated(_address, false);
     }
 
     // ============ Emergency ============
 
-    function emergencyWithdraw() external onlyOwner {
+    function emergencyWithdraw() external nonReentrant onlyOwner {
+        // CEI: set state BEFORE external calls
+        emergencyMode = true;
+        paused = true;
+
         // Pull everything from strategy
         if (address(strategy) != address(0)) {
             uint256 balance = strategy.balanceOf();
@@ -354,10 +505,12 @@ contract ArbitrumVault {
 
         // Send all assets to owner
         uint256 total = asset.balanceOf(address(this));
-        asset.transfer(owner, total);
+        if (total > 0) {
+            asset.safeTransfer(owner, total);
+        }
 
-        emergencyMode = true;
-        paused = true;
+        emit EmergencyModeSet(true);
+        emit Paused(msg.sender);
     }
 
     // ============ View Functions ============
@@ -373,6 +526,7 @@ contract ArbitrumVault {
 
     function previewDeposit(uint256 amount) external view returns (uint256) {
         if (totalShares == 0) return amount;
+        if (totalAssets == 0) return 0;
         return (amount * totalShares) / totalAssets;
     }
 
