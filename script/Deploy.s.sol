@@ -6,14 +6,20 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {YieldVault} from "../src/core/YieldVault.sol";
 import {Timelock} from "../src/core/Timelock.sol";
 import {AaveLeverageStrategy} from "../src/strategies/AaveLeverageStrategy.sol";
-import {AaveDeltaNeutralStrategy} from "../src/strategies/AaveDeltaNeutralStrategy.sol";
-import {GmxGmPoolStrategy} from "../src/strategies/GmxGmPoolStrategy.sol";
+import {AaveSupplyStrategy} from "../src/strategies/AaveSupplyStrategy.sol";
 import {Harvester} from "../src/periphery/Harvester.sol";
 import {EmergencyModule} from "../src/periphery/EmergencyModule.sol";
 import {VaultRouter} from "../src/periphery/VaultRouter.sol";
 import {Constants} from "../src/libraries/Constants.sol";
 
 /// @notice Full deployment script for the Yield Vault system on Arbitrum.
+///
+/// Strategies:
+///   - AaveLeverageStrategy (60%): USDC supply/borrow loop, 10-15% APY
+///   - AaveSupplyStrategy (40%): Simple USDC supply, 3-8% APY
+///
+/// Both strategies are fully synchronous — no async settlement, no keepers,
+/// no cross-asset swaps, no multi-step failure risk.
 ///
 /// Usage:
 ///   1. Copy .env.example → .env and fill in:
@@ -32,10 +38,6 @@ contract DeployScript is Script {
         address guardian = vm.envAddress("GUARDIAN_ADDRESS");
         address feeRecipient = vm.envAddress("FEE_RECIPIENT");
 
-        // GMX GM Market — ETH/USD market (stablecoin side earns perp fees)
-        // This address should be verified on GMX's market list before deployment
-        address gmMarket = vm.envOr("GM_MARKET", address(0));
-
         vm.startBroadcast(deployerKey);
         address deployer = vm.addr(deployerKey);
 
@@ -44,7 +46,6 @@ contract DeployScript is Script {
         console2.log("Timelock:", address(timelock));
 
         // ─── 2. Deploy Vault ───
-        // Note: harvester set to deployer initially, updated below after Harvester deploy
         YieldVault vault = new YieldVault(
             IERC20(Constants.USDC),
             address(timelock),
@@ -57,26 +58,16 @@ contract DeployScript is Script {
         console2.log("StrategyManager:", strategyMgr);
 
         // ─── 3. Deploy Strategies ───
-        // Strategies need both vault address (for USDC returns) and strategyManager (authorized caller)
         AaveLeverageStrategy aaveLev = new AaveLeverageStrategy(address(vault), strategyMgr, Constants.USDC);
         console2.log("AaveLeverageStrategy:", address(aaveLev));
 
-        AaveDeltaNeutralStrategy aaveDn = new AaveDeltaNeutralStrategy(address(vault), strategyMgr, Constants.USDC);
-        console2.log("AaveDeltaNeutralStrategy:", address(aaveDn));
-
-        GmxGmPoolStrategy gmxStrat;
-        if (gmMarket != address(0)) {
-            gmxStrat = new GmxGmPoolStrategy(address(vault), strategyMgr, Constants.USDC, gmMarket);
-            console2.log("GmxGmPoolStrategy:", address(gmxStrat));
-        } else {
-            console2.log("GmxGmPoolStrategy: SKIPPED (set GM_MARKET env var)");
-        }
+        AaveSupplyStrategy aaveSupply = new AaveSupplyStrategy(address(vault), strategyMgr, Constants.USDC);
+        console2.log("AaveSupplyStrategy:", address(aaveSupply));
 
         // ─── 4. Deploy Periphery ───
         Harvester harvester = new Harvester(address(vault), deployer);
         console2.log("Harvester:", address(harvester));
 
-        // Update harvester on vault
         vault.setHarvester(address(harvester));
 
         EmergencyModule emergency = new EmergencyModule(address(vault), guardian);
@@ -88,37 +79,25 @@ contract DeployScript is Script {
         // ─── 5. Queue Strategy Additions via Timelock ───
         uint256 eta = block.timestamp + 24 hours + 1;
 
-        // Queue: addStrategy(aaveLev, 4000) — 40% allocation
+        // Queue: addStrategy(aaveLev, 6000) — 60% allocation
         timelock.queueTransaction(
             address(vault),
             0,
             "addStrategy(address,uint256)",
-            abi.encode(address(aaveLev), 4000),
+            abi.encode(address(aaveLev), 6000),
             eta
         );
-        console2.log("Queued AaveLeverage addition (40%) for ETA:", eta);
+        console2.log("Queued AaveLeverage addition (60%) for ETA:", eta);
 
-        // Queue: addStrategy(aaveDn, 3000) — 30% allocation
+        // Queue: addStrategy(aaveSupply, 4000) — 40% allocation
         timelock.queueTransaction(
             address(vault),
             0,
             "addStrategy(address,uint256)",
-            abi.encode(address(aaveDn), 3000),
+            abi.encode(address(aaveSupply), 4000),
             eta
         );
-        console2.log("Queued AaveDeltaNeutral addition (30%) for ETA:", eta);
-
-        // Queue: addStrategy(gmxStrat, 3000) — 30% allocation
-        if (address(gmxStrat) != address(0)) {
-            timelock.queueTransaction(
-                address(vault),
-                0,
-                "addStrategy(address,uint256)",
-                abi.encode(address(gmxStrat), 3000),
-                eta
-            );
-            console2.log("Queued GmxGmPool addition (30%) for ETA:", eta);
-        }
+        console2.log("Queued AaveSupply addition (40%) for ETA:", eta);
 
         vm.stopBroadcast();
 

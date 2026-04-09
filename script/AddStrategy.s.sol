@@ -7,7 +7,7 @@ import {Timelock} from "../src/core/Timelock.sol";
 /// @notice Execute queued strategy additions after the 24h timelock delay.
 ///
 /// Usage:
-///   TIMELOCK=0x... VAULT=0x... AAVE_LEV=0x... AAVE_DN=0x... GMX_STRAT=0x...
+///   TIMELOCK=0x... VAULT=0x... AAVE_LEV=0x... AAVE_SUPPLY=0x... ETA=...
 ///   forge script script/AddStrategy.s.sol --rpc-url arbitrum --broadcast
 contract AddStrategyScript is Script {
     function run() external {
@@ -15,8 +15,7 @@ contract AddStrategyScript is Script {
         address timelockAddr = vm.envAddress("TIMELOCK");
         address vaultAddr = vm.envAddress("VAULT");
         address aaveLev = vm.envAddress("AAVE_LEV");
-        address aaveDn = vm.envAddress("AAVE_DN");
-        address gmxStrat = vm.envOr("GMX_STRAT", address(0));
+        address aaveSupply = vm.envAddress("AAVE_SUPPLY");
         uint256 eta = vm.envUint("ETA"); // The ETA from Deploy.s.sol output
 
         Timelock timelock = Timelock(payable(timelockAddr));
@@ -28,30 +27,19 @@ contract AddStrategyScript is Script {
             vaultAddr,
             0,
             "addStrategy(address,uint256)",
-            abi.encode(aaveLev, 4000),
+            abi.encode(aaveLev, 6000),
             eta
         );
-        console2.log("AaveLeverageStrategy activated (40%)");
+        console2.log("AaveLeverageStrategy activated (60%)");
 
         timelock.executeTransaction(
             vaultAddr,
             0,
             "addStrategy(address,uint256)",
-            abi.encode(aaveDn, 3000),
+            abi.encode(aaveSupply, 4000),
             eta
         );
-        console2.log("AaveDeltaNeutralStrategy activated (30%)");
-
-        if (gmxStrat != address(0)) {
-            timelock.executeTransaction(
-                vaultAddr,
-                0,
-                "addStrategy(address,uint256)",
-                abi.encode(gmxStrat, 3000),
-                eta
-            );
-            console2.log("GmxGmPoolStrategy activated (30%)");
-        }
+        console2.log("AaveSupplyStrategy activated (40%)");
 
         vm.stopBroadcast();
         console2.log("All strategies active. Vault is ready for deposits.");

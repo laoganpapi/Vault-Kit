@@ -238,6 +238,40 @@ Three independent audit passes were conducted covering:
 
 ---
 
+## Strategy Hardening (Post-Audit Restructuring)
+
+After the audit, a comprehensive failure-mode analysis revealed that two strategies had unacceptable execution risk:
+
+**GMX GM Pool (REMOVED)** — Async settlement pattern created 7+ failure modes:
+- Withdrawals returned 0 USDC immediately (async keeper-dependent)
+- `_reconcilePending()` blindly cleared state without verifying settlement
+- ETH execution fee exhaustion locked all operations
+- Emergency withdraw created async request (defeats purpose)
+- No timeout, no cancellation, no fallback for stuck keeper requests
+
+**Aave Delta-Neutral (REMOVED)** — 4-step deposit, 6-step withdrawal:
+- wstETH depeg = instant liquidation (50-70% loss)
+- 3-hop Uniswap swap required (pool illiquidity reverts entire tx)
+- Hedge drift could reach 15-20% between harvests
+- Oracle failure cascade: stale wstETH/ETH feed freezes all vault operations
+
+**Aave Leverage Loop (HARDENED)**:
+- Reduced `MAX_LOOPS` from 5 to 3
+- Raised `MIN_HEALTH_FACTOR` from 1.8 to 2.5 (absorbs Aave governance changes)
+- Raised `EMERGENCY_HEALTH_FACTOR` from 1.5 to 1.8
+- Fixed unwind loop: consecutive zero-freed iterations now break instead of looping infinitely
+
+**Aave Simple Supply (ADDED)** — Simplest possible strategy:
+- One external call per deposit/withdraw
+- No borrowing, no swaps (except ARB reward harvest), no liquidation risk
+- `totalAssets()` = `aUSDC.balanceOf()` — always accurate, no pending state
+
+**New allocation**: Leverage Loop (60%) + Simple Supply (40%)
+**Revised yield target**: 8-14% APY (down from 20-25%)
+**Trade-off**: Lower yield, dramatically lower failure risk. Every operation is synchronous and atomic.
+
+---
+
 ## Recommendations for Production
 
 1. **Multisig**: Deploy with a Gnosis Safe multisig as owner (3/5 recommended)

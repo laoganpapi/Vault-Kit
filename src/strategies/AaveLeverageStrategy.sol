@@ -20,9 +20,9 @@ contract AaveLeverageStrategy is BaseStrategy {
 
     // ─── Constants ───
     uint256 public constant TARGET_LTV_BPS = 7_000; // 70% LTV target per loop
-    uint256 public constant MAX_LOOPS = 5;
-    uint256 public constant MIN_HEALTH_FACTOR = 1.8e18;
-    uint256 public constant EMERGENCY_HEALTH_FACTOR = 1.5e18;
+    uint256 public constant MAX_LOOPS = 3; // Reduced from 5 for safety
+    uint256 public constant MIN_HEALTH_FACTOR = 2.5e18; // Raised from 1.8 for governance change buffer
+    uint256 public constant EMERGENCY_HEALTH_FACTOR = 1.8e18; // Raised from 1.5
     uint256 public constant MAX_SLIPPAGE_BPS = 10; // 0.1% for reward swaps
 
     // ─── Immutables ───
@@ -124,7 +124,8 @@ contract AaveLeverageStrategy is BaseStrategy {
         // Need to free up `amount` of net USDC
 
         uint256 remaining = amount;
-        uint256 maxIterations = MAX_LOOPS * 2; // Safety bound
+        uint256 maxIterations = MAX_LOOPS * 3; // Safety bound
+        uint256 zeroFreedCount;
 
         for (uint256 i; i < maxIterations && remaining > 0;) {
             uint256 debt = debtUsdc.balanceOf(address(this));
@@ -138,18 +139,12 @@ contract AaveLeverageStrategy is BaseStrategy {
             }
 
             // Withdraw what we can without breaking health factor
-            (uint256 totalCollateral, uint256 totalDebt,, uint256 currentLiquidationThreshold,, uint256 hf) =
+            (uint256 totalCollateral, uint256 totalDebt,, uint256 currentLiquidationThreshold,,) =
                 aavePool.getUserAccountData(address(this));
 
-            // Calculate max safe withdrawal (keep hf > 1.5)
-            // collateral * liqThreshold / debt = hf
-            // (collateral - x) * liqThreshold / debt >= 1.5
-            // x <= collateral - (1.5 * debt / liqThreshold)
+            // Calculate max safe withdrawal (keep hf > EMERGENCY_HEALTH_FACTOR)
             uint256 safeWithdrawBase;
             if (totalDebt > 0) {
-                // Use Aave's reported liquidation threshold (4th return value, in BPS * 100)
-                // hf = collateral * liqThreshold / debt
-                // minCollateral = EMERGENCY_HF * debt / (liqThreshold / 1e4)
                 uint256 liqThreshold = currentLiquidationThreshold; // from getUserAccountData, scaled 1e4
                 uint256 liqThresholdWad = liqThreshold * 1e14; // scale to 1e18
                 uint256 minCollateral = (EMERGENCY_HEALTH_FACTOR * totalDebt) / liqThresholdWad;
@@ -174,6 +169,15 @@ contract AaveLeverageStrategy is BaseStrategy {
             uint256 netFreed = got - toRepay;
             withdrawn += netFreed;
             remaining = remaining > netFreed ? remaining - netFreed : 0;
+
+            // Prevent infinite zero-freed loops: if two consecutive iterations
+            // free nothing, the position is stuck at emergency HF — stop trying
+            if (netFreed == 0) {
+                zeroFreedCount++;
+                if (zeroFreedCount >= 2) break;
+            } else {
+                zeroFreedCount = 0;
+            }
 
             unchecked { ++i; }
         }

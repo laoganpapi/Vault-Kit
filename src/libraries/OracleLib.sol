@@ -63,17 +63,4 @@ library OracleLib {
         return usdcAmount * usdcPrice * 1e4;
     }
 
-    /// @notice Convert wstETH amount to USDC value
-    function wstethToUsdc(uint256 wstethAmount) internal view returns (uint256) {
-        uint256 wstethEthPrice = getPrice(IChainlinkAggregator(Constants.CHAINLINK_WSTETH_ETH)); // 18 decimals
-        uint256 ethUsdPrice = getPrice(IChainlinkAggregator(Constants.CHAINLINK_ETH_USD)); // 8 decimals
-        uint256 usdcUsdPrice = getPrice(IChainlinkAggregator(Constants.CHAINLINK_USDC_USD)); // 8 decimals
-
-        // wstethAmount (18 dec) * wstethEthPrice (18 dec) / 1e18 = ETH value (18 dec)
-        // ETH value * ethUsdPrice (8 dec) / usdcUsdPrice (8 dec) = USDC value (18 dec)
-        // Then scale down to 6 decimals for USDC
-        uint256 ethValue = (wstethAmount * wstethEthPrice) / 1e18;
-        uint256 usdValue = (ethValue * ethUsdPrice) / usdcUsdPrice;
-        return usdValue / 1e12; // 18 dec → 6 dec
-    }
 }
