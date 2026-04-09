@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Script, console2} from "forge-std/Script.sol";
+import {Timelock} from "../src/core/Timelock.sol";
+
+/// @notice Execute queued strategy additions after the 24h timelock delay.
+///
+/// Usage:
+///   TIMELOCK=0x... VAULT=0x... AAVE_LEV=0x... AAVE_DN=0x... GMX_STRAT=0x...
+///   forge script script/AddStrategy.s.sol --rpc-url arbitrum --broadcast
+contract AddStrategyScript is Script {
+    function run() external {
+        uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        address timelockAddr = vm.envAddress("TIMELOCK");
+        address vaultAddr = vm.envAddress("VAULT");
+        address aaveLev = vm.envAddress("AAVE_LEV");
+        address aaveDn = vm.envAddress("AAVE_DN");
+        address gmxStrat = vm.envOr("GMX_STRAT", address(0));
+        uint256 eta = vm.envUint("ETA"); // The ETA from Deploy.s.sol output
+
+        Timelock timelock = Timelock(payable(timelockAddr));
+
+        vm.startBroadcast(deployerKey);
+
+        // Execute queued strategy additions
+        timelock.executeTransaction(
+            vaultAddr,
+            0,
+            "addStrategy(address,uint256)",
+            abi.encode(aaveLev, 4000),
+            eta
+        );
+        console2.log("AaveLeverageStrategy activated (40%)");
+
+        timelock.executeTransaction(
+            vaultAddr,
+            0,
+            "addStrategy(address,uint256)",
+            abi.encode(aaveDn, 3000),
+            eta
+        );
+        console2.log("AaveDeltaNeutralStrategy activated (30%)");
+
+        if (gmxStrat != address(0)) {
+            timelock.executeTransaction(
+                vaultAddr,
+                0,
+                "addStrategy(address,uint256)",
+                abi.encode(gmxStrat, 3000),
+                eta
+            );
+            console2.log("GmxGmPoolStrategy activated (30%)");
+        }
+
+        vm.stopBroadcast();
+        console2.log("All strategies active. Vault is ready for deposits.");
+    }
+}
