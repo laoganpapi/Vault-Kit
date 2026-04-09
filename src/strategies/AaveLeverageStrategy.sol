@@ -20,9 +20,9 @@ contract AaveLeverageStrategy is BaseStrategy {
 
     // ─── Constants ───
     uint256 public constant TARGET_LTV_BPS = 7_000; // 70% LTV target per loop
-    uint256 public constant MAX_LOOPS = 3; // Reduced from 5 for safety
-    uint256 public constant MIN_HEALTH_FACTOR = 2.5e18; // Raised from 1.8 for governance change buffer
-    uint256 public constant EMERGENCY_HEALTH_FACTOR = 1.8e18; // Raised from 1.5
+    uint256 public constant MAX_LOOPS = 5; // Same-asset loop: no price-based liquidation risk
+    uint256 public constant MIN_HEALTH_FACTOR = 2.0e18; // Safe buffer for Aave governance changes
+    uint256 public constant EMERGENCY_HEALTH_FACTOR = 1.5e18; // Unwind floor
     uint256 public constant MAX_SLIPPAGE_BPS = 10; // 0.1% for reward swaps
 
     // ─── Immutables ───
