@@ -2,6 +2,7 @@ import { BaseDetector } from './base';
 import { AnalysisContext } from '../core/context';
 import { Finding, Severity, Confidence, VulnerabilityCategory } from '../core/types';
 import { findStateChangesAfterCalls } from '../analyzers/control-flow';
+import { buildCallGraph } from '../analyzers/call-graph';
 import { isReentrancyGuard } from '../utils/patterns';
 import { walkAST } from '../utils/ast-helpers';
 
@@ -123,6 +124,11 @@ export class ReentrancyDetector extends BaseDetector {
     return calls;
   }
 
+  /**
+   * Cross-function reentrancy: function A makes an external call,
+   * then function B (callable during reentry) reads state that A
+   * hasn't yet updated. Uses the call graph to trace internal call chains.
+   */
   private checkCrossFunctionReentrancy(
     context: AnalysisContext,
     contract: any,
@@ -136,26 +142,78 @@ export class ReentrancyDetector extends BaseDetector {
     const externalCalls = this.findExternalCalls(body);
     if (externalCalls.length === 0) return;
 
-    // Find state variables read/written by this function
-    const stateVarNames = new Set(contract.stateVariables.map((v: any) => v.name));
-    const writtenVars = new Set<string>();
+    const stateVarNames = new Set<string>(contract.stateVariables.map((v: any) => v.name as string));
+    const callGraph = buildCallGraph(contract);
 
-    for (const otherFn of contract.functions) {
-      if (otherFn.name === fn.name || !otherFn.hasBody) continue;
-      if (!context.isExternallyCallable(otherFn)) continue;
-
-      const otherBody = (otherFn.node as any).body;
-      if (!otherBody) continue;
-
-      // Check if the other function reads state that this function writes after a call
-      walkAST(otherBody, (node: any) => {
+    // Find state vars that this function writes AFTER external calls
+    const varsWrittenAfterCall = new Set<string>();
+    const violations = findStateChangesAfterCalls(body, stateVarNames);
+    for (const { stateChange } of violations) {
+      walkAST(stateChange, (node: any) => {
         if (node.type === 'Identifier' && stateVarNames.has(node.name)) {
-          writtenVars.add(node.name);
+          varsWrittenAfterCall.add(node.name);
         }
       });
     }
 
-    // This is a simplified check — full cross-function reentrancy requires
-    // taint analysis across the entire call graph
+    // Also collect vars written in the function body (even if before the call,
+    // they could be stale during reentry if another function reads them)
+    const allWrittenVars = new Set<string>();
+    const allAssignments = context.getStateAssignments(body, contract);
+    for (const assignment of allAssignments) {
+      walkAST(assignment, (node: any) => {
+        if (node.type === 'Identifier' && stateVarNames.has(node.name)) {
+          allWrittenVars.add(node.name);
+        }
+      });
+    }
+
+    // Check other external functions that read state this function writes
+    for (const otherFn of contract.functions) {
+      if (otherFn.name === fn.name || !otherFn.hasBody) continue;
+      if (!context.isExternallyCallable(otherFn)) continue;
+
+      const otherHasGuard = otherFn.modifiers.some((m: string) => isReentrancyGuard(m));
+      if (otherHasGuard) continue;
+
+      const otherBody = (otherFn.node as any).body;
+      if (!otherBody) continue;
+
+      // Find state vars read by the other function
+      const varsReadByOther = new Set<string>();
+      walkAST(otherBody, (node: any) => {
+        if (node.type === 'Identifier' && stateVarNames.has(node.name)) {
+          varsReadByOther.add(node.name);
+        }
+      });
+
+      // Intersection: vars written by fn (after call) that are read by otherFn
+      const sharedVars: string[] = [];
+      for (const v of allWrittenVars) {
+        if (varsReadByOther.has(v)) sharedVars.push(v);
+      }
+
+      if (sharedVars.length > 0) {
+        findings.push(
+          this.createFinding(context, {
+            title: `Cross-function reentrancy: ${contract.name}.${fn.name}() -> ${otherFn.name}()`,
+            description:
+              `Function ${fn.name}() makes external calls and modifies state variables ` +
+              `[${sharedVars.join(', ')}] that are also read by ${otherFn.name}(). ` +
+              `During the external call in ${fn.name}(), an attacker can reenter through ` +
+              `${otherFn.name}() and read stale values of these variables.`,
+            severity: Severity.HIGH,
+            confidence: Confidence.MEDIUM,
+            node: fn.node,
+            recommendation:
+              `Apply a shared nonReentrant modifier to both ${fn.name}() and ${otherFn.name}(). ` +
+              `Alternatively, ensure all state changes in ${fn.name}() complete before any external call.`,
+            references: [
+              'https://medium.com/coinmonks/cross-function-reentrancy-de9cbce0129e',
+            ],
+          })
+        );
+      }
+    }
   }
 }

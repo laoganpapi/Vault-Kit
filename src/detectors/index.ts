@@ -16,6 +16,12 @@ import { FlashLoanDetector } from './flash-loan';
 import { OracleManipulationDetector } from './oracle-manipulation';
 import { ProxyStorageDetector } from './proxy-storage';
 import { ERCComplianceDetector } from './erc-compliance';
+import { LockedEtherDetector } from './locked-ether';
+import { StateShadowingDetector } from './state-shadowing';
+import { MissingEventsDetector } from './missing-events';
+import { UnsafeAssemblyDetector } from './unsafe-assembly';
+import { PrecisionLossDetector } from './precision-loss';
+import { CentralizationRiskDetector } from './centralization-risk';
 
 /** All available detectors, ordered by typical severity */
 export function getAllDetectors(): BaseDetector[] {
@@ -32,6 +38,8 @@ export function getAllDetectors(): BaseDetector[] {
     new FlashLoanDetector(),
     new OracleManipulationDetector(),
     new ProxyStorageDetector(),
+    new LockedEtherDetector(),
+    new CentralizationRiskDetector(),
 
     // Medium
     new SelfdestructDetector(),
@@ -39,10 +47,14 @@ export function getAllDetectors(): BaseDetector[] {
     new DOSVectorsDetector(),
     new FrontRunningDetector(),
     new UninitializedStorageDetector(),
+    new PrecisionLossDetector(),
+    new StateShadowingDetector(),
+    new UnsafeAssemblyDetector(),
 
     // Low / Informational / Gas
     new FloatingPragmaDetector(),
     new ERCComplianceDetector(),
+    new MissingEventsDetector(),
     new GasOptimizationDetector(),
   ];
 }

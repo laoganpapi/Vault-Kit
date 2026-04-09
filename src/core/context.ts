@@ -166,11 +166,13 @@ export class AnalysisContext {
     const stateVarNames = new Set(contract.stateVariables.map(v => v.name));
     const assignments: ASTNode[] = [];
 
+    const assignOps = new Set(['=', '+=', '-=', '*=', '/=', '|=', '&=', '^=']);
+
     this.walkNode(root, undefined, (node: any) => {
       if (
         node.type === 'ExpressionStatement' &&
         node.expression?.type === 'BinaryOperation' &&
-        node.expression.operator === '='
+        assignOps.has(node.expression.operator)
       ) {
         const left = node.expression.left;
         if (left?.type === 'Identifier' && stateVarNames.has(left.name)) {

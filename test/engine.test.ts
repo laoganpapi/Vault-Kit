@@ -96,9 +96,9 @@ describe('AnalysisContext', () => {
 });
 
 describe('Detectors', () => {
-  it('should have at least 17 detectors registered', () => {
+  it('should have at least 23 detectors registered', () => {
     const detectors = getAllDetectors();
-    assert.ok(detectors.length >= 17, `Expected >= 17, got ${detectors.length}`);
+    assert.ok(detectors.length >= 23, `Expected >= 23, got ${detectors.length}`);
   });
 
   it('should have unique IDs', () => {

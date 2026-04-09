@@ -90,24 +90,54 @@ export class GasOptimizationDetector extends BaseDetector {
     const vars = contract.stateVariables;
     if (vars.length < 2) return;
 
-    // Check for sequential small-type variables that could be packed
-    let consecutiveSmall: any[] = [];
+    // Detect sub-256-bit variables that are separated by 256-bit variables
+    // (they could be grouped together to share a slot)
+    const smallVars: Array<{ v: any; bits: number; index: number }> = [];
+    const fullSlotIndices = new Set<number>();
 
-    for (const v of vars) {
-      const bits = this.getTypeBits(v.typeName);
+    for (let i = 0; i < vars.length; i++) {
+      const bits = this.getTypeBits(vars[i].typeName);
       if (bits > 0 && bits < 256) {
-        consecutiveSmall.push(v);
+        smallVars.push({ v: vars[i], bits, index: i });
       } else {
-        if (consecutiveSmall.length >= 2) {
-          const totalBits = consecutiveSmall.reduce(
-            (sum: number, sv: any) => sum + this.getTypeBits(sv.typeName), 0
-          );
-          if (totalBits <= 256) {
-            // These could be packed into a single slot — check if they ARE adjacent
-            // This is a simplified check
-          }
+        fullSlotIndices.add(i);
+      }
+    }
+
+    // Find small vars that are NOT adjacent to each other (a full-slot var separates them)
+    for (let i = 0; i < smallVars.length - 1; i++) {
+      const current = smallVars[i];
+      const next = smallVars[i + 1];
+
+      // Check if there's a full-slot variable between them
+      let separatedByFullSlot = false;
+      for (let j = current.index + 1; j < next.index; j++) {
+        if (fullSlotIndices.has(j)) {
+          separatedByFullSlot = true;
+          break;
         }
-        consecutiveSmall = [];
+      }
+
+      if (separatedByFullSlot && current.bits + next.bits <= 256) {
+        findings.push(
+          this.createFinding(context, {
+            title: `Storage packing opportunity in ${contract.name}`,
+            description:
+              `State variables '${current.v.name}' (${current.bits} bits) and '${next.v.name}' ` +
+              `(${next.bits} bits) could share a storage slot (${current.bits + next.bits}/256 bits) ` +
+              `but are separated by a 256-bit variable. Reordering them to be adjacent would save ` +
+              `one storage slot (20,000 gas on first write).`,
+            severity: Severity.GAS,
+            confidence: Confidence.HIGH,
+            node: current.v.node,
+            recommendation:
+              `Reorder state variables to group sub-256-bit types together:\n` +
+              `${current.v.typeName} ${current.v.name}; // ${current.bits} bits\n` +
+              `${next.v.typeName} ${next.v.name}; // ${next.bits} bits`,
+            gasImpact: 20000,
+          })
+        );
+        break; // Only report one packing opportunity per contract
       }
     }
   }
