@@ -1,0 +1,42 @@
+{
+  "name": "vault-kit",
+  "version": "1.0.0",
+  "description": "Enterprise-grade smart contract security auditor. Static analysis engine for Solidity with 18+ vulnerability detectors, control flow analysis, and professional audit report generation.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "vault-kit": "./bin/vault-kit.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "audit": "node dist/cli.js",
+    "test": "node --test dist/test/**/*.test.js",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "solidity",
+    "smart-contract",
+    "security",
+    "audit",
+    "static-analysis",
+    "ethereum",
+    "blockchain",
+    "vulnerability-detection",
+    "defi"
+  ],
+  "author": "Vault-Kit",
+  "license": "MIT",
+  "dependencies": {
+    "@solidity-parser/parser": "^0.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
