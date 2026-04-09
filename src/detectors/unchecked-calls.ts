@@ -48,7 +48,8 @@ export class UncheckedCallsDetector extends BaseDetector {
     walkAST(body, (node: any, parent: any) => {
       if (!isLowLevelCall(node) && !isSendCall(node)) return;
 
-      const memberName = node.expression?.memberName || 'call';
+      // Resolve the actual member name through NameValueExpression
+      const memberName = this.resolveMemberName(node);
 
       // Check if the call is within an ExpressionStatement (return value discarded)
       if (parent?.type === 'ExpressionStatement') {
@@ -76,9 +77,9 @@ export class UncheckedCallsDetector extends BaseDetector {
 
       // Check if result is assigned but the bool is not checked
       if (parent?.type === 'VariableDeclarationStatement') {
-        // (bool success, bytes memory data) = ... -> check if success is used in require
         const variables = parent.variables || [];
-        const boolVar = variables[0];
+        // Find the bool variable — it could be at any position in the tuple
+        const boolVar = variables.find((v: any) => v && this.looksLikeBool(v));
         if (boolVar && !this.isBoolChecked(boolVar.name, body)) {
           findings.push(
             this.createFinding(context, {
@@ -106,14 +107,17 @@ export class UncheckedCallsDetector extends BaseDetector {
   ): void {
     walkAST(body, (node: any, parent: any) => {
       if (node.type !== 'FunctionCall') return;
-      const expr = node.expression;
-      if (expr?.type !== 'MemberAccess') return;
 
-      const memberName = expr.memberName;
+      // Resolve MemberAccess through NameValueExpression
+      const memberAccess = this.getMemberAccess(node.expression);
+      if (!memberAccess) return;
+
+      const memberName = memberAccess.memberName;
       if (!['transfer', 'transferFrom', 'approve'].includes(memberName)) return;
 
-      // Skip ETH transfer (address.transfer)
-      if (memberName === 'transfer' && node.arguments?.length === 1) return;
+      // Skip native ETH transfer: address.transfer(amount) has exactly 1 arg
+      // ERC-20 transfer: token.transfer(to, amount) has exactly 2 args
+      if (memberName === 'transfer' && node.arguments?.length !== 2) return;
 
       // Check if used as expression statement (return not checked)
       if (parent?.type === 'ExpressionStatement') {
@@ -139,11 +143,38 @@ export class UncheckedCallsDetector extends BaseDetector {
     });
   }
 
+  /** Resolve MemberAccess from expression, handling NameValueExpression */
+  private getMemberAccess(expr: any): any | null {
+    if (expr?.type === 'MemberAccess') return expr;
+    if (expr?.type === 'NameValueExpression' && expr.expression?.type === 'MemberAccess') {
+      return expr.expression;
+    }
+    return null;
+  }
+
+  /** Resolve the member name of a call, handling NameValueExpression */
+  private resolveMemberName(node: any): string {
+    const expr = node.expression;
+    if (expr?.type === 'MemberAccess') return expr.memberName;
+    if (expr?.type === 'NameValueExpression' && expr.expression?.type === 'MemberAccess') {
+      return expr.expression.memberName;
+    }
+    return 'call';
+  }
+
+  /** Check if a variable declaration looks like a bool (by name or type) */
+  private looksLikeBool(v: any): boolean {
+    if (v.typeName?.type === 'ElementaryTypeName' && v.typeName.name === 'bool') return true;
+    // Common naming: success, ok, sent, result
+    const name = (v.name || '').toLowerCase();
+    return ['success', 'ok', 'sent', 'result', 's'].includes(name);
+  }
+
   private isBoolChecked(varName: string, body: any): boolean {
     let checked = false;
     walkAST(body, (node: any) => {
       if (checked) return;
-      // require(success)
+      // require(success) or assert(success)
       if (node.type === 'FunctionCall') {
         const fn = node.expression;
         if (fn?.type === 'Identifier' && (fn.name === 'require' || fn.name === 'assert')) {
@@ -154,7 +185,7 @@ export class UncheckedCallsDetector extends BaseDetector {
           });
         }
       }
-      // if (!success) revert
+      // if (success) or if (!success)
       if (node.type === 'IfStatement') {
         walkAST(node.condition, (inner: any) => {
           if (inner.type === 'Identifier' && inner.name === varName) {

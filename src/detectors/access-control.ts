@@ -164,9 +164,15 @@ export class AccessControlDetector extends BaseDetector {
     let found = false;
     walkAST(fnNode, (node: any) => {
       if (found) return;
-      if (node.type === 'FunctionCall' && node.expression?.type === 'MemberAccess') {
-        const member = node.expression.memberName;
-        if (['transfer', 'send', 'call'].includes(member)) {
+      if (node.type === 'FunctionCall') {
+        const expr = node.expression;
+        let memberAccess: any = null;
+        if (expr?.type === 'MemberAccess') {
+          memberAccess = expr;
+        } else if (expr?.type === 'NameValueExpression' && expr.expression?.type === 'MemberAccess') {
+          memberAccess = expr.expression;
+        }
+        if (memberAccess && ['transfer', 'send', 'call'].includes(memberAccess.memberName)) {
           found = true;
         }
       }

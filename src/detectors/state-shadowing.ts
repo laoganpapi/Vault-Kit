@@ -33,8 +33,8 @@ export class StateShadowingDetector extends BaseDetector {
 
     for (const contract of context.contracts) {
       if (contract.kind === 'interface' || contract.kind === 'library') continue;
-      if (contract.baseContracts.length === 0) continue;
 
+      // Check state variable shadowing against base contracts
       const ownVars = contract.stateVariables;
 
       for (const baseName of contract.baseContracts) {

@@ -43,19 +43,29 @@ export class ERCComplianceDetector extends BaseDetector {
     return findings;
   }
 
+  /** Get all externally-visible names: explicit functions + public state variable getters */
+  private getExternalNames(contract: any): Set<string> {
+    const names = new Set<string>();
+    for (const f of contract.functions) names.add(f.name);
+    for (const v of contract.stateVariables) {
+      if (v.visibility === 'public') names.add(v.name);
+    }
+    return names;
+  }
+
   private detectERCType(contract: any): 'ERC20' | 'ERC721' | null {
     const bases = contract.baseContracts.map((b: string) => b.toLowerCase());
-    const fnNames = contract.functions.map((f: any) => f.name);
+    const names = this.getExternalNames(contract);
 
     // Check inheritance
     if (bases.some((b: string) => b.includes('erc20') || b.includes('ierc20'))) return 'ERC20';
     if (bases.some((b: string) => b.includes('erc721') || b.includes('ierc721'))) return 'ERC721';
 
-    // Heuristic: check function signatures
-    const hasTransfer = fnNames.includes('transfer');
-    const hasBalanceOf = fnNames.includes('balanceOf');
-    const hasTotalSupply = fnNames.includes('totalSupply');
-    const hasOwnerOf = fnNames.includes('ownerOf');
+    // Heuristic: check function/getter signatures
+    const hasTransfer = names.has('transfer');
+    const hasBalanceOf = names.has('balanceOf');
+    const hasTotalSupply = names.has('totalSupply');
+    const hasOwnerOf = names.has('ownerOf');
 
     if (hasTransfer && hasBalanceOf && hasTotalSupply && !hasOwnerOf) return 'ERC20';
     if (hasOwnerOf && hasBalanceOf) return 'ERC721';
@@ -68,7 +78,8 @@ export class ERCComplianceDetector extends BaseDetector {
     contract: any,
     findings: Finding[]
   ): void {
-    const fnNames = new Set(contract.functions.map((f: any) => f.name));
+    // Include public state variable names as they generate getters
+    const fnNames = this.getExternalNames(contract);
     const eventNames = new Set(contract.events.map((e: any) => e.name));
 
     // Check required functions

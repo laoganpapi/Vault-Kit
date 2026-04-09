@@ -116,10 +116,18 @@ export class DOSVectorsDetector extends BaseDetector {
 
       walkAST(loopBody, (inner: any) => {
         if (inner.type !== 'FunctionCall') return;
-        const expr = inner.expression;
-        if (expr?.type !== 'MemberAccess') return;
 
-        const member = expr.memberName;
+        // Resolve MemberAccess through NameValueExpression wrapper
+        const expr = inner.expression;
+        let memberAccess: any = null;
+        if (expr?.type === 'MemberAccess') {
+          memberAccess = expr;
+        } else if (expr?.type === 'NameValueExpression' && expr.expression?.type === 'MemberAccess') {
+          memberAccess = expr.expression;
+        }
+        if (!memberAccess) return;
+
+        const member = memberAccess.memberName;
         if (['transfer', 'send', 'call'].includes(member)) {
           findings.push(
             this.createFinding(context, {

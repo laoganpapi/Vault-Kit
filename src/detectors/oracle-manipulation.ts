@@ -33,6 +33,36 @@ export class OracleManipulationDetector extends BaseDetector {
     return findings;
   }
 
+  /** Resolve MemberAccess through NameValueExpression */
+  private getMemberAccess(expr: any): any | null {
+    if (expr?.type === 'MemberAccess') return expr;
+    if (expr?.type === 'NameValueExpression' && expr.expression?.type === 'MemberAccess') {
+      return expr.expression;
+    }
+    return null;
+  }
+
+  /**
+   * Collect variable names assigned from a latestRoundData() call's destructuring.
+   * e.g., (uint80 roundId, int256 answer, , uint256 updatedAt, ) = ...
+   * Returns a map of position -> variable name.
+   */
+  private getDestructuredVarNames(callNode: any, body: any): Map<number, string> {
+    const vars = new Map<number, string>();
+    // Walk the body to find the VariableDeclarationStatement containing this call
+    walkAST(body, (node: any) => {
+      if (node.type === 'VariableDeclarationStatement' && node.initialValue === callNode) {
+        const decls = node.variables || [];
+        for (let i = 0; i < decls.length; i++) {
+          if (decls[i]?.name) {
+            vars.set(i, decls[i].name);
+          }
+        }
+      }
+    });
+    return vars;
+  }
+
   private checkChainlinkUsage(
     context: AnalysisContext,
     contract: any,
@@ -45,34 +75,75 @@ export class OracleManipulationDetector extends BaseDetector {
 
       walkAST(body, (node: any) => {
         if (node.type !== 'FunctionCall') return;
-        const expr = node.expression;
-        if (expr?.type !== 'MemberAccess') return;
+        const ma = this.getMemberAccess(node.expression);
+        if (!ma) return;
 
         // latestRoundData() — Chainlink pattern
-        if (expr.memberName === 'latestRoundData') {
-          // Check if the function validates staleness (updatedAt)
-          const fnBody = body;
-          let checksTimestamp = false;
-          let checksRoundId = false;
-          let checksAnswer = false;
+        if (ma.memberName === 'latestRoundData') {
+          // Get the actual variable names from the destructuring
+          const varNames = this.getDestructuredVarNames(node, body);
+          // Chainlink returns: (roundId, answer, startedAt, updatedAt, answeredInRound)
+          const answerVar = varNames.get(1);
+          const updatedAtVar = varNames.get(3);
+          const answeredInRoundVar = varNames.get(4);
+          const roundIdVar = varNames.get(0);
 
-          walkAST(fnBody, (inner: any) => {
-            if (inner.type === 'Identifier') {
-              if (inner.name === 'updatedAt' || inner.name === 'timestamp') checksTimestamp = true;
-              if (inner.name === 'answeredInRound' || inner.name === 'roundId') checksRoundId = true;
-            }
-            // Check for answer > 0
-            if (
-              inner.type === 'BinaryOperation' &&
-              (inner.operator === '>' || inner.operator === '!=')
-            ) {
-              walkAST(inner, (n: any) => {
-                if (n.type === 'Identifier' && (n.name === 'answer' || n.name === 'price')) {
-                  checksAnswer = true;
-                }
-              });
-            }
-          });
+          // Check for staleness: updatedAt variable used in comparison with block.timestamp
+          let checksTimestamp = false;
+          if (updatedAtVar) {
+            walkAST(body, (inner: any) => {
+              if (inner.type === 'BinaryOperation' && ['>', '<', '>=', '<=', '-'].includes(inner.operator)) {
+                let hasUpdatedAt = false;
+                let hasBlockTimestamp = false;
+                walkAST(inner, (n: any) => {
+                  if (n.type === 'Identifier' && n.name === updatedAtVar) hasUpdatedAt = true;
+                  if (n.type === 'MemberAccess' && n.expression?.name === 'block' && n.memberName === 'timestamp') {
+                    hasBlockTimestamp = true;
+                  }
+                });
+                if (hasUpdatedAt && hasBlockTimestamp) checksTimestamp = true;
+              }
+              // Also check require with the variable
+              if (inner.type === 'FunctionCall' && inner.expression?.name === 'require') {
+                walkAST(inner, (n: any) => {
+                  if (n.type === 'Identifier' && n.name === updatedAtVar) checksTimestamp = true;
+                });
+              }
+            });
+          }
+
+          // Check for answer > 0 validation
+          let checksAnswer = false;
+          if (answerVar) {
+            walkAST(body, (inner: any) => {
+              if (inner.type === 'BinaryOperation' && ['>', '>=', '!='].includes(inner.operator)) {
+                walkAST(inner, (n: any) => {
+                  if (n.type === 'Identifier' && n.name === answerVar) checksAnswer = true;
+                });
+              }
+              if (inner.type === 'FunctionCall' && inner.expression?.name === 'require') {
+                walkAST(inner, (n: any) => {
+                  if (n.type === 'Identifier' && n.name === answerVar) checksAnswer = true;
+                });
+              }
+            });
+          }
+
+          // Check for round completeness
+          let checksRoundId = false;
+          if (answeredInRoundVar && roundIdVar) {
+            walkAST(body, (inner: any) => {
+              if (inner.type === 'BinaryOperation' && ['>=', '=='].includes(inner.operator)) {
+                let hasAnsweredInRound = false;
+                let hasRoundId = false;
+                walkAST(inner, (n: any) => {
+                  if (n.type === 'Identifier' && n.name === answeredInRoundVar) hasAnsweredInRound = true;
+                  if (n.type === 'Identifier' && n.name === roundIdVar) hasRoundId = true;
+                });
+                if (hasAnsweredInRound && hasRoundId) checksRoundId = true;
+              }
+            });
+          }
 
           if (!checksTimestamp) {
             findings.push(
@@ -127,7 +198,7 @@ export class OracleManipulationDetector extends BaseDetector {
         }
 
         // latestAnswer() — deprecated single-value pattern
-        if (expr.memberName === 'latestAnswer') {
+        if (ma.memberName === 'latestAnswer') {
           findings.push(
             this.createFinding(context, {
               title: `Deprecated latestAnswer() in ${contract.name}.${fn.name}()`,

@@ -154,24 +154,46 @@ export class CentralizationRiskDetector extends BaseDetector {
     return findings;
   }
 
+  /**
+   * Check if a function has an ownership/authorization check via require(msg.sender == ...).
+   * Must be an equality comparison (==) with msg.sender on one side and a state variable
+   * or identifier (like 'owner', 'admin') on the other. Balance checks like
+   * require(balances[msg.sender] >= amount) should NOT match.
+   */
   private hasOwnerCheck(fnNode: any): boolean {
     let found = false;
     walkAST(fnNode, (node: any) => {
       if (found) return;
       if (node.type === 'FunctionCall') {
         const fn = node.expression;
-        if (fn?.type === 'Identifier' && fn.name === 'require') {
+        if (fn?.type === 'Identifier' && (fn.name === 'require' || fn.name === 'assert')) {
+          // Look for require(msg.sender == X) pattern specifically
           walkAST(node, (inner: any) => {
-            if (inner.type === 'MemberAccess' &&
-                inner.expression?.name === 'msg' &&
-                inner.memberName === 'sender') {
-              found = true;
+            if (inner.type === 'BinaryOperation' && (inner.operator === '==' || inner.operator === '!=')) {
+              const hasMsgSender = this.isMsgSender(inner.left) || this.isMsgSender(inner.right);
+              if (hasMsgSender) found = true;
             }
           });
         }
       }
+      // Also check if (msg.sender != X) revert pattern
+      if (node.type === 'IfStatement') {
+        walkAST(node.condition, (inner: any) => {
+          if (inner.type === 'BinaryOperation' && (inner.operator === '==' || inner.operator === '!=')) {
+            const hasMsgSender = this.isMsgSender(inner.left) || this.isMsgSender(inner.right);
+            if (hasMsgSender) found = true;
+          }
+        });
+      }
     });
     return found;
+  }
+
+  private isMsgSender(node: any): boolean {
+    return node?.type === 'MemberAccess' &&
+           node.expression?.type === 'Identifier' &&
+           node.expression.name === 'msg' &&
+           node.memberName === 'sender';
   }
 
   private hasTimelockPattern(contract: any, context: AnalysisContext): boolean {
