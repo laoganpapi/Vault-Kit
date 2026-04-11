@@ -22,6 +22,11 @@ import { MissingEventsDetector } from './missing-events';
 import { UnsafeAssemblyDetector } from './unsafe-assembly';
 import { PrecisionLossDetector } from './precision-loss';
 import { CentralizationRiskDetector } from './centralization-risk';
+import { ShareInflationDetector } from './share-inflation';
+import { SignatureReplayDetector } from './signature-replay';
+import { WeirdERC20Detector } from './weird-erc20';
+import { SandwichDetector } from './sandwich';
+import { StorageCollisionDetector } from './storage-collision';
 
 /** All available detectors, ordered by typical severity */
 export function getAllDetectors(): BaseDetector[] {
@@ -30,6 +35,7 @@ export function getAllDetectors(): BaseDetector[] {
     new ReentrancyDetector(),
     new AccessControlDetector(),
     new DelegatecallDetector(),
+    new SandwichDetector(),
 
     // High
     new UncheckedCallsDetector(),
@@ -40,6 +46,9 @@ export function getAllDetectors(): BaseDetector[] {
     new ProxyStorageDetector(),
     new LockedEtherDetector(),
     new CentralizationRiskDetector(),
+    new ShareInflationDetector(),
+    new SignatureReplayDetector(),
+    new StorageCollisionDetector(),
 
     // Medium
     new SelfdestructDetector(),
@@ -50,6 +59,7 @@ export function getAllDetectors(): BaseDetector[] {
     new PrecisionLossDetector(),
     new StateShadowingDetector(),
     new UnsafeAssemblyDetector(),
+    new WeirdERC20Detector(),
 
     // Low / Informational / Gas
     new FloatingPragmaDetector(),

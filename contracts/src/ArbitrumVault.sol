@@ -216,6 +216,10 @@ contract ArbitrumVault {
 
     // ============ Deposit / Withdraw ============
 
+    // Dead shares minted on first deposit to prevent share inflation attack.
+    // Inspired by Uniswap V2's MINIMUM_LIQUIDITY pattern.
+    uint256 public constant DEAD_SHARES = 1000;
+
     function deposit(uint256 amount) external nonReentrant whenNotPaused whenNotEmergency {
         require(amount >= minDeposit, "Below minimum");
         require(totalAssets + amount <= depositCap, "Cap exceeded");
@@ -224,26 +228,33 @@ contract ArbitrumVault {
             require(whitelist[msg.sender], "Not whitelisted");
         }
 
-        // Calculate shares (round down in favor of vault)
+        // Measure actual received amount to support fee-on-transfer tokens
+        uint256 balanceBefore = asset.balanceOf(address(this));
+        asset.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = asset.balanceOf(address(this)) - balanceBefore;
+        require(received > 0, "No assets received");
+
+        // Calculate shares based on actual received amount
+        // First depositor: lock DEAD_SHARES to address(0) to prevent inflation attack
         uint256 sharesToMint;
         if (totalShares == 0) {
-            sharesToMint = amount;
+            require(received > DEAD_SHARES, "Below dead share threshold");
+            sharesToMint = received - DEAD_SHARES;
+            // Lock dead shares permanently — nobody can withdraw them
+            shares[address(0)] += DEAD_SHARES;
+            totalShares += DEAD_SHARES;
         } else {
-            require(totalAssets != 0, "totalAssets is zero");
-            sharesToMint = (amount * totalShares) / totalAssets;
+            sharesToMint = (received * totalShares) / totalAssets;
         }
         require(sharesToMint != 0, "Zero shares minted");
 
-        // CEI: Effects before interactions
+        // Effects (state was already settled for dead-share branch; now complete the rest)
         shares[msg.sender] += sharesToMint;
         totalShares += sharesToMint;
-        totalAssets += amount;
+        totalAssets += received;
         lastDepositTime[msg.sender] = block.timestamp;
 
-        // Interaction: transfer assets from user
-        asset.safeTransferFrom(msg.sender, address(this), amount);
-
-        emit Deposit(msg.sender, amount, sharesToMint);
+        emit Deposit(msg.sender, received, sharesToMint);
     }
 
     function withdraw(uint256 shareAmount) external nonReentrant whenNotPaused {

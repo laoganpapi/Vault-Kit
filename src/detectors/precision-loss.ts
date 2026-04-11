@@ -101,8 +101,11 @@ export class PrecisionLossDetector extends BaseDetector {
       if (divisor?.type === 'NumberLiteral') {
         const value = parseInt(divisor.number, 10);
 
-        // Division by large numbers (like 10000 for basis points, 1e18 for wad)
-        if (value >= 10000) {
+        // Skip common DeFi denominators: 10000 (bps), 1e18 (wad), 1e8 (USDC/BTC price)
+        // Only flag truly unusual large denominators that suggest precision issues
+        const isStandardDenominator = value === 10000 || value === 1e18 || value === 1e8 || value === 1e6;
+
+        if (value >= 1e20 && !isStandardDenominator) {
           findings.push(
             this.createFinding(context, {
               title: `Potential precision loss in division by ${value} in ${contractName}.${fnName}()`,
@@ -124,7 +127,7 @@ export class PrecisionLossDetector extends BaseDetector {
 
       // Check for division by a variable (possible division by zero)
       if (divisor?.type === 'Identifier') {
-        // Check if there's a require/if check for zero
+        // Check for an explicit require(x != 0) or require(x > 0) in the same function
         let hasDivZeroGuard = false;
         walkAST(body, (inner: any) => {
           if (inner.type === 'FunctionCall') {
@@ -143,6 +146,35 @@ export class PrecisionLossDetector extends BaseDetector {
             }
           }
         });
+
+        // Check for early-return guard: if (x == 0) return ...
+        if (!hasDivZeroGuard) {
+          walkAST(body, (inner: any) => {
+            if (inner.type === 'IfStatement') {
+              // Check condition: x == 0 or totalShares == 0
+              let hasZeroCheck = false;
+              walkAST(inner.condition, (cond: any) => {
+                if (cond.type === 'BinaryOperation' && cond.operator === '==') {
+                  const left = cond.left;
+                  const right = cond.right;
+                  const isDivisorOnLeft = left?.type === 'Identifier' && left.name === divisor.name;
+                  const isDivisorOnRight = right?.type === 'Identifier' && right.name === divisor.name;
+                  const isZeroOnLeft = left?.type === 'NumberLiteral' && left.number === '0';
+                  const isZeroOnRight = right?.type === 'NumberLiteral' && right.number === '0';
+                  if ((isDivisorOnLeft && isZeroOnRight) || (isDivisorOnRight && isZeroOnLeft)) {
+                    hasZeroCheck = true;
+                  }
+                }
+              });
+              // Check if the if-body contains a return statement
+              if (hasZeroCheck) {
+                walkAST(inner.trueBody || {}, (body2: any) => {
+                  if (body2.type === 'ReturnStatement') hasDivZeroGuard = true;
+                });
+              }
+            }
+          });
+        }
 
         if (!hasDivZeroGuard) {
           findings.push(

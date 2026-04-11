@@ -6,17 +6,17 @@
 
 | Property | Value |
 |----------|-------|
-| **Date** | 4/9/2026, 10:11:07 PM |
+| **Date** | 4/11/2026, 9:50:21 PM |
 | **Engine Version** | 1.0.0 |
 | **Files Analyzed** | 1 |
 | **Contracts Analyzed** | 5 |
-| **Lines of Code** | 443 |
+| **Lines of Code** | 453 |
 
 ## Security Score
 
-### 72/100 — (LOW) Minor issues identified
+### 86/100 — (LOW) Minor issues identified
 
-`[##############------]` 72/100
+`[#################---]` 86/100
 
 ## Findings Summary
 
@@ -24,21 +24,21 @@
 |----------|-------|
 | Critical | **0** |
 | High | **0** |
-| Medium | **4** |
-| Low | **4** |
+| Medium | **2** |
+| Low | **2** |
 | Informational | 6 |
 | Gas Optimization | 0 |
-| **Total** | **14** |
+| **Total** | **10** |
 
 ## Scope
 
 | File | Contracts | Lines | Findings |
 |------|-----------|-------|----------|
-| `/home/user/Vault-Kit/contracts/ArbitrumVault.sol` | IERC20, IStrategy, AggregatorV3Interface, SafeERC20, ArbitrumVault | 443 | 14 |
+| `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol` | IERC20, IStrategy, AggregatorV3Interface, SafeERC20, ArbitrumVault | 453 | 10 |
 
 ## Detailed Findings
 
-### [MEDIUM] MEDIUM (4)
+### [MEDIUM] MEDIUM (2)
 
 #### VK-001: Single oracle dependency in ArbitrumVault
 
@@ -47,7 +47,7 @@
 | **Severity** | MEDIUM |
 | **Confidence** | low |
 | **Category** | Oracle Manipulation |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:105` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:105` |
 
 **Description:**
 
@@ -67,41 +67,14 @@ Consider implementing a fallback oracle pattern with multiple price sources. Use
 
 ---
 
-#### VK-011: Potential division by zero in ArbitrumVault.sharePrice()
+#### VK-010: Potential division by zero in ArbitrumVault.deposit()
 
 | | |
 |---|---|
 | **Severity** | MEDIUM |
 | **Confidence** | low |
 | **Category** | Arithmetic Precision Loss |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:520` |
-
-**Description:**
-
-Division by variable 'totalShares' without an apparent zero-check. If totalShares is zero, the transaction will revert. If this is a user-facing function, a zero divisor should produce a meaningful error message.
-
-**Code:**
-
-```solidity
-519 |         if (totalShares == 0) return 1e18;
-520 |         return (totalAssets * 1e18) / totalShares;
-521 |     }
-```
-
-**Recommendation:**
-
-Add a require statement: require(totalShares != 0, "Division by zero");
-
----
-
-#### VK-012: Potential division by zero in ArbitrumVault.previewDeposit()
-
-| | |
-|---|---|
-| **Severity** | MEDIUM |
-| **Confidence** | low |
-| **Category** | Arithmetic Precision Loss |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:530` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:247` |
 
 **Description:**
 
@@ -110,9 +83,9 @@ Division by variable 'totalAssets' without an apparent zero-check. If totalAsset
 **Code:**
 
 ```solidity
-529 |         if (totalAssets == 0) return 0;
-530 |         return (amount * totalShares) / totalAssets;
-531 |     }
+246 |         } else {
+247 |             sharesToMint = (received * totalShares) / totalAssets;
+248 |         }
 ```
 
 **Recommendation:**
@@ -121,43 +94,72 @@ Add a require statement: require(totalAssets != 0, "Division by zero");
 
 ---
 
-#### VK-013: Potential division by zero in ArbitrumVault.previewWithdraw()
+### [LOW] LOW (2)
+
+#### VK-008: Incorrect rounding direction in ArbitrumVault.withdraw()
 
 | | |
 |---|---|
-| **Severity** | MEDIUM |
+| **Severity** | LOW |
 | **Confidence** | low |
-| **Category** | Arithmetic Precision Loss |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:535` |
+| **Category** | ERC-4626 Share Inflation |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:260` |
 
 **Description:**
 
-Division by variable 'totalShares' without an apparent zero-check. If totalShares is zero, the transaction will revert. If this is a user-facing function, a zero divisor should produce a meaningful error message.
+Withdraw function uses standard division which rounds down. For withdraws, rounding should favor the protocol (round UP on shares burned, round DOWN on assets sent). Rounding in favor of the user allows dust-extraction attacks.
 
 **Code:**
 
 ```solidity
-534 |         if (totalShares == 0) return 0;
-535 |         uint256 assetAmount = (shareAmount * totalAssets) / totalShares;
-536 |         uint256 fee = (assetAmount * withdrawalFee) / 10000;
+259 | 
+260 |     function withdraw(uint256 shareAmount) external nonReentrant whenNotPaused {
+261 |         require(shareAmount != 0, "Zero shares");
+262 |         require(shares[msg.sender] >= shareAmount, "Insufficient shares");
+263 |         require(
+264 |             block.timestamp >= lastDepositTime[msg.sender] + withdrawalDelay,
+265 |             "Withdrawal delay"
+266 |         );
+267 |         require(totalShares != 0, "No shares outstanding");
+268 | 
+269 |         // Calculate assets (round down in favor of vault)
+270 |         uint256 assetAmount = (shareAmount * totalAssets) / totalShares;
+271 |         require(assetAmount != 0, "Zero assets");
+272 | 
+273 |         // Calculate withdrawal fee
+274 |         uint256 fee = (assetAmount * withdrawalFee) / 10000;
+275 |         uint256 netAmount = assetAmount - fee;
+276 | 
+277 |         // CEI: Effects BEFORE interactions
+278 |         shares[msg.sender] -= shareAmount;
+279 |         totalShares -= shareAmount;
+280 |         totalAssets -= assetAmount;
+281 | 
+282 |         // Interactions: transfers AFTER all state changes
+283 |         if (fee > 0) {
+284 |             asset.safeTransfer(feeRecipient, fee);
+285 |         }
+286 |         asset.safeTransfer(msg.sender, netAmount);
+287 | 
+288 |         emit Withdraw(msg.sender, netAmount, shareAmount);
+289 |     }
+290 | 
 ```
 
 **Recommendation:**
 
-Add a require statement: require(totalShares != 0, "Division by zero");
+For deposits: round shares DOWN (fewer shares minted). For withdraws: round shares UP (more shares burned). Use mulDivUp/mulDivDown from OpenZeppelin Math library.
 
 ---
 
-### [LOW] LOW (4)
-
-#### VK-008: block.timestamp used in condition in ArbitrumVault.withdraw()
+#### VK-009: block.timestamp used in condition in ArbitrumVault.withdraw()
 
 | | |
 |---|---|
 | **Severity** | LOW |
 | **Confidence** | high |
 | **Category** | Timestamp Dependence |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:253` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:264` |
 
 **Description:**
 
@@ -166,95 +168,14 @@ block.timestamp is used in a comparison. Validators can manipulate the timestamp
 **Code:**
 
 ```solidity
-252 |         require(
-253 |             block.timestamp >= lastDepositTime[msg.sender] + withdrawalDelay,
-254 |             "Withdrawal delay"
+263 |         require(
+264 |             block.timestamp >= lastDepositTime[msg.sender] + withdrawalDelay,
+265 |             "Withdrawal delay"
 ```
 
 **Recommendation:**
 
 Ensure that a ~15 second manipulation of block.timestamp cannot cause harm. For time-sensitive operations, consider using block numbers or external time oracles.
-
----
-
-#### VK-009: Potential precision loss in division by 10000 in ArbitrumVault.withdraw()
-
-| | |
-|---|---|
-| **Severity** | LOW |
-| **Confidence** | low |
-| **Category** | Arithmetic Precision Loss |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:263` |
-
-**Description:**
-
-Division by 10000 can truncate small amounts to zero. For example, if amount < 10000, the result will be 0. This can lead to users losing small amounts of tokens ("dust") or getting 0 rewards/shares.
-
-**Code:**
-
-```solidity
-262 |         // Calculate withdrawal fee
-263 |         uint256 fee = (assetAmount * withdrawalFee) / 10000;
-264 |         uint256 netAmount = assetAmount - fee;
-```
-
-**Recommendation:**
-
-Consider adding a minimum amount check, or use fixed-point arithmetic libraries. Ensure rounding favors the protocol (round down for shares issued, round up for shares redeemed).
-
----
-
-#### VK-010: Potential precision loss in division by 10000 in ArbitrumVault.harvest()
-
-| | |
-|---|---|
-| **Severity** | LOW |
-| **Confidence** | low |
-| **Category** | Arithmetic Precision Loss |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:328` |
-
-**Description:**
-
-Division by 10000 can truncate small amounts to zero. For example, if amount < 10000, the result will be 0. This can lead to users losing small amounts of tokens ("dust") or getting 0 rewards/shares.
-
-**Code:**
-
-```solidity
-327 |         if (profit > 0) {
-328 |             uint256 fee = (profit * performanceFee) / 10000;
-329 | 
-```
-
-**Recommendation:**
-
-Consider adding a minimum amount check, or use fixed-point arithmetic libraries. Ensure rounding favors the protocol (round down for shares issued, round up for shares redeemed).
-
----
-
-#### VK-014: Potential precision loss in division by 10000 in ArbitrumVault.previewWithdraw()
-
-| | |
-|---|---|
-| **Severity** | LOW |
-| **Confidence** | low |
-| **Category** | Arithmetic Precision Loss |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:536` |
-
-**Description:**
-
-Division by 10000 can truncate small amounts to zero. For example, if amount < 10000, the result will be 0. This can lead to users losing small amounts of tokens ("dust") or getting 0 rewards/shares.
-
-**Code:**
-
-```solidity
-535 |         uint256 assetAmount = (shareAmount * totalAssets) / totalShares;
-536 |         uint256 fee = (assetAmount * withdrawalFee) / 10000;
-537 |         return assetAmount - fee;
-```
-
-**Recommendation:**
-
-Consider adding a minimum amount check, or use fixed-point arithmetic libraries. Ensure rounding favors the protocol (round down for shares issued, round up for shares redeemed).
 
 ---
 
@@ -267,7 +188,7 @@ Consider adding a minimum amount check, or use fixed-point arithmetic libraries.
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:390` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:401` |
 
 **Description:**
 
@@ -276,12 +197,12 @@ Privileged function pause() can freeze/unfreeze all protocol operations. This is
 **Code:**
 
 ```solidity
-389 | 
-390 |     function pause() external onlyGuardian {
-391 |         paused = true;
-392 |         emit Paused(msg.sender);
-393 |     }
-394 | 
+400 | 
+401 |     function pause() external onlyGuardian {
+402 |         paused = true;
+403 |         emit Paused(msg.sender);
+404 |     }
+405 | 
 ```
 
 **Recommendation:**
@@ -301,7 +222,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:395` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:406` |
 
 **Description:**
 
@@ -310,12 +231,12 @@ Privileged function unpause() can freeze/unfreeze all protocol operations. This 
 **Code:**
 
 ```solidity
-394 | 
-395 |     function unpause() external onlyOwner {
-396 |         paused = false;
-397 |         emit Unpaused(msg.sender);
-398 |     }
-399 | 
+405 | 
+406 |     function unpause() external onlyOwner {
+407 |         paused = false;
+408 |         emit Unpaused(msg.sender);
+409 |     }
+410 | 
 ```
 
 **Recommendation:**
@@ -335,7 +256,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:445` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:456` |
 
 **Description:**
 
@@ -344,14 +265,14 @@ Privileged function setFeeRecipient() can modify critical protocol parameters. T
 **Code:**
 
 ```solidity
-444 | 
-445 |     function setFeeRecipient(address _recipient) external onlyOwner {
-446 |         require(_recipient != address(0), "Zero address");
-447 |         address oldRecipient = feeRecipient;
-448 |         feeRecipient = _recipient;
-449 |         emit FeeRecipientUpdated(oldRecipient, _recipient);
-450 |     }
-451 | 
+455 | 
+456 |     function setFeeRecipient(address _recipient) external onlyOwner {
+457 |         require(_recipient != address(0), "Zero address");
+458 |         address oldRecipient = feeRecipient;
+459 |         feeRecipient = _recipient;
+460 |         emit FeeRecipientUpdated(oldRecipient, _recipient);
+461 |     }
+462 | 
 ```
 
 **Recommendation:**
@@ -371,7 +292,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:459` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:470` |
 
 **Description:**
 
@@ -380,13 +301,13 @@ Privileged function transferOwnership() can transfer ownership to a new address.
 **Code:**
 
 ```solidity
-458 | 
-459 |     function transferOwnership(address _newOwner) external onlyOwner {
-460 |         require(_newOwner != address(0), "Zero address");
-461 |         pendingOwner = _newOwner;
-462 |         emit OwnershipTransferStarted(owner, _newOwner);
-463 |     }
-464 | 
+469 | 
+470 |     function transferOwnership(address _newOwner) external onlyOwner {
+471 |         require(_newOwner != address(0), "Zero address");
+472 |         pendingOwner = _newOwner;
+473 |         emit OwnershipTransferStarted(owner, _newOwner);
+474 |     }
+475 | 
 ```
 
 **Recommendation:**
@@ -406,7 +327,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:473` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:484` |
 
 **Description:**
 
@@ -415,12 +336,12 @@ Privileged function setWhitelistEnabled() can modify access permissions. This is
 **Code:**
 
 ```solidity
-472 | 
-473 |     function setWhitelistEnabled(bool _enabled) external onlyOwner {
-474 |         whitelistEnabled = _enabled;
-475 |         emit WhitelistEnabledUpdated(_enabled);
-476 |     }
-477 | 
+483 | 
+484 |     function setWhitelistEnabled(bool _enabled) external onlyOwner {
+485 |         whitelistEnabled = _enabled;
+486 |         emit WhitelistEnabledUpdated(_enabled);
+487 |     }
+488 | 
 ```
 
 **Recommendation:**
@@ -440,7 +361,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/ArbitrumVault.sol:493` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:504` |
 
 **Description:**
 
@@ -449,30 +370,30 @@ Privileged function emergencyWithdraw() can drain all funds from the contract. T
 **Code:**
 
 ```solidity
-492 | 
-493 |     function emergencyWithdraw() external nonReentrant onlyOwner {
-494 |         // CEI: set state BEFORE external calls
-495 |         emergencyMode = true;
-496 |         paused = true;
-497 | 
-498 |         // Pull everything from strategy
-499 |         if (address(strategy) != address(0)) {
-500 |             uint256 balance = strategy.balanceOf();
-501 |             if (balance > 0) {
-502 |                 strategy.withdraw(balance);
-503 |             }
-504 |         }
-505 | 
-506 |         // Send all assets to owner
-507 |         uint256 total = asset.balanceOf(address(this));
-508 |         if (total > 0) {
-509 |             asset.safeTransfer(owner, total);
-510 |         }
-511 | 
-512 |         emit EmergencyModeSet(true);
-513 |         emit Paused(msg.sender);
-514 |     }
-515 | 
+503 | 
+504 |     function emergencyWithdraw() external nonReentrant onlyOwner {
+505 |         // CEI: set state BEFORE external calls
+506 |         emergencyMode = true;
+507 |         paused = true;
+508 | 
+509 |         // Pull everything from strategy
+510 |         if (address(strategy) != address(0)) {
+511 |             uint256 balance = strategy.balanceOf();
+512 |             if (balance > 0) {
+513 |                 strategy.withdraw(balance);
+514 |             }
+515 |         }
+516 | 
+517 |         // Send all assets to owner
+518 |         uint256 total = asset.balanceOf(address(this));
+519 |         if (total > 0) {
+520 |             asset.safeTransfer(owner, total);
+521 |         }
+522 | 
+523 |         emit EmergencyModeSet(true);
+524 |         emit Paused(msg.sender);
+525 |     }
+526 | 
 ```
 
 **Recommendation:**
