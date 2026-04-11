@@ -103,6 +103,8 @@ contract ArbitrumVault {
     IERC20 public immutable asset;
     IStrategy public strategy;
     AggregatorV3Interface public immutable priceFeed;
+    AggregatorV3Interface public immutable sequencerUptimeFeed;
+    uint256 public constant GRACE_PERIOD = 3600; // 1 hour after sequencer recovery
 
     mapping(address => uint256) public shares;
     uint256 public totalShares;
@@ -191,10 +193,12 @@ contract ArbitrumVault {
         string memory _symbol,
         address _asset,
         address _priceFeed,
+        address _sequencerUptimeFeed,
         address _feeRecipient
     ) {
         require(_asset != address(0), "Zero asset address");
         require(_priceFeed != address(0), "Zero oracle address");
+        require(_sequencerUptimeFeed != address(0), "Zero sequencer feed");
         require(_feeRecipient != address(0), "Zero fee recipient");
 
         name = _name;
@@ -203,6 +207,7 @@ contract ArbitrumVault {
         guardian = msg.sender;
         asset = IERC20(_asset);
         priceFeed = AggregatorV3Interface(_priceFeed);
+        sequencerUptimeFeed = AggregatorV3Interface(_sequencerUptimeFeed);
         feeRecipient = _feeRecipient;
 
         performanceFee = 1000;    // 10%
@@ -371,6 +376,12 @@ contract ArbitrumVault {
     // ============ Price Feed ============
 
     function getAssetPrice() public view returns (uint256) {
+        // Check L2 sequencer uptime (Arbitrum-specific).
+        // Chainlink sequencer feed: answer == 0 means sequencer is UP.
+        (, int256 sequencerAnswer, uint256 sequencerStartedAt,,) = sequencerUptimeFeed.latestRoundData();
+        require(sequencerAnswer == 0, "Sequencer down");
+        require(block.timestamp - sequencerStartedAt > GRACE_PERIOD, "Grace period not over");
+
         (
             uint80 roundId,
             int256 answer,

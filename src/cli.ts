@@ -24,6 +24,8 @@ function printUsage(): void {
   console.log('  --severity <level>             Minimum severity: critical|high|medium|low|informational|gas');
   console.log('  --enable <ids>                 Comma-separated detector IDs to enable');
   console.log('  --disable <ids>                Comma-separated detector IDs to disable');
+  console.log('  --high-only                    Only report HIGH and CRITICAL findings (benchmark mode)');
+  console.log('  --benchmark                    Benchmark mode: HIGH+ only, evmbench-compatible output');
   console.log('  --verbose                      Show detailed processing info');
   console.log('  --list-detectors               List all available detectors');
   console.log('  --gas                          Include gas optimization findings');
@@ -68,6 +70,8 @@ function parseArgs(args: string[]): {
   listDetectors: boolean;
   gas: boolean;
   help: boolean;
+  highOnly: boolean;
+  benchmark: boolean;
 } {
   const result = {
     files: [] as string[],
@@ -80,6 +84,8 @@ function parseArgs(args: string[]): {
     listDetectors: false,
     gas: false,
     help: false,
+    highOnly: false,
+    benchmark: false,
   };
 
   let i = 0;
@@ -94,6 +100,10 @@ function parseArgs(args: string[]): {
       result.verbose = true;
     } else if (arg === '--gas') {
       result.gas = true;
+    } else if (arg === '--high-only') {
+      result.highOnly = true;
+    } else if (arg === '--benchmark') {
+      result.benchmark = true;
     } else if (arg === '--format' || arg === '-f') {
       result.format = (args[++i] as ReportFormat) || 'text';
     } else if (arg === '--output' || arg === '-o') {
@@ -138,10 +148,22 @@ async function main(): Promise<void> {
     }
   }
 
+  // Determine severity threshold
+  let severityThreshold = args.severity;
+  if (!severityThreshold) {
+    if (args.highOnly || args.benchmark) {
+      severityThreshold = Severity.HIGH;
+    } else if (args.gas) {
+      severityThreshold = Severity.GAS;
+    } else {
+      severityThreshold = Severity.INFORMATIONAL;
+    }
+  }
+
   const config: AuditConfig = {
     files: args.files.map(f => path.resolve(f)),
     reportFormat: args.format,
-    severityThreshold: args.severity || (args.gas ? Severity.GAS : Severity.INFORMATIONAL),
+    severityThreshold,
     enabledDetectors: args.enable,
     disabledDetectors: args.gas ? args.disable : [...(args.disable || [])],
     verbose: args.verbose,

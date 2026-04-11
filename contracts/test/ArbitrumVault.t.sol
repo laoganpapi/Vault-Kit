@@ -144,6 +144,7 @@ contract ArbitrumVaultTest is Test {
     ArbitrumVault public vault;
     MockERC20 public token;
     MockAggregator public oracle;
+    MockAggregator public sequencerFeed;
     MockStrategy public strategy;
 
     address public owner = address(this);
@@ -155,7 +156,13 @@ contract ArbitrumVaultTest is Test {
     function setUp() public {
         token = new MockERC20();
         oracle = new MockAggregator();
-        vault = new ArbitrumVault("Vault", "vMOCK", address(token), address(oracle), feeRecipient);
+        sequencerFeed = new MockAggregator();
+        sequencerFeed.setPrice(0); // 0 = sequencer up
+        vm.warp(block.timestamp + 7200); // Beyond grace period
+        vault = new ArbitrumVault(
+            "Vault", "vMOCK",
+            address(token), address(oracle), address(sequencerFeed), feeRecipient
+        );
         strategy = new MockStrategy(address(token));
 
         // Fund users
@@ -260,7 +267,7 @@ contract ArbitrumVaultTest is Test {
     function test_feeOnTransferToken_usesActualReceivedAmount() public {
         FoTToken fotToken = new FoTToken();
         ArbitrumVault fotVault = new ArbitrumVault(
-            "FoT Vault", "vFOT", address(fotToken), address(oracle), feeRecipient
+            "FoT Vault", "vFOT", address(fotToken), address(oracle), address(sequencerFeed), feeRecipient
         );
 
         fotToken.mint(alice, 100 ether);

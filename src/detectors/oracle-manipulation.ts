@@ -78,6 +78,11 @@ export class OracleManipulationDetector extends BaseDetector {
         const ma = this.getMemberAccess(node.expression);
         if (!ma) return;
 
+        // Skip calls to sequencer uptime feeds — they have different validation semantics
+        const receiverName = ma.expression?.type === 'Identifier' ? ma.expression.name : '';
+        const receiverLower = receiverName.toLowerCase();
+        if (receiverLower.includes('sequencer') || receiverLower.includes('uptime')) return;
+
         // latestRoundData() — Chainlink pattern
         if (ma.memberName === 'latestRoundData') {
           // Get the actual variable names from the destructuring

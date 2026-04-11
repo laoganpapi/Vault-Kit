@@ -27,6 +27,13 @@ import { SignatureReplayDetector } from './signature-replay';
 import { WeirdERC20Detector } from './weird-erc20';
 import { SandwichDetector } from './sandwich';
 import { StorageCollisionDetector } from './storage-collision';
+import { ReadOnlyReentrancyDetector } from './readonly-reentrancy';
+import { EcrecoverBugsDetector } from './ecrecover-bugs';
+import { ArbitraryExternalCallDetector } from './arbitrary-external-call';
+import { UninitializedProxyDetector } from './uninitialized-proxy';
+import { L2SequencerDetector } from './l2-sequencer';
+import { UnsafeCastDetector } from './unsafe-cast';
+import { ForcedEtherDetector } from './forced-ether';
 
 /** All available detectors, ordered by typical severity */
 export function getAllDetectors(): BaseDetector[] {
@@ -36,6 +43,7 @@ export function getAllDetectors(): BaseDetector[] {
     new AccessControlDetector(),
     new DelegatecallDetector(),
     new SandwichDetector(),
+    new ArbitraryExternalCallDetector(),
 
     // High
     new UncheckedCallsDetector(),
@@ -49,6 +57,10 @@ export function getAllDetectors(): BaseDetector[] {
     new ShareInflationDetector(),
     new SignatureReplayDetector(),
     new StorageCollisionDetector(),
+    new ReadOnlyReentrancyDetector(),
+    new EcrecoverBugsDetector(),
+    new UninitializedProxyDetector(),
+    new L2SequencerDetector(),
 
     // Medium
     new SelfdestructDetector(),
@@ -60,6 +72,8 @@ export function getAllDetectors(): BaseDetector[] {
     new StateShadowingDetector(),
     new UnsafeAssemblyDetector(),
     new WeirdERC20Detector(),
+    new UnsafeCastDetector(),
+    new ForcedEtherDetector(),
 
     // Low / Informational / Gas
     new FloatingPragmaDetector(),
