@@ -65,6 +65,19 @@ abstract contract BaseStrategy is IStrategy, ReentrancyGuard {
         }
     }
 
+    /// @notice Sweep a non-USDC ERC20 balance (e.g. stranded reward token) to the vault.
+    ///         Vault-gated so governance can recover reward tokens that accrued before
+    ///         the harvest path could sweep them, or after the strategy is retired.
+    ///         USDC is excluded — it is always handled via withdraw/emergencyWithdraw.
+    function rescueToken(address token) external {
+        if (msg.sender != vault) revert Errors.NotVault();
+        if (token == address(usdc)) revert Errors.ZeroAmount();
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        if (bal > 0) {
+            IERC20(token).safeTransfer(vault, bal);
+        }
+    }
+
     /// @notice Override: deploy USDC into the underlying protocol
     function _deposit(uint256 amount) internal virtual returns (uint256 deployed);
 

@@ -12,6 +12,10 @@ import {StrategyManager} from "./StrategyManager.sol";
 import {Errors} from "../libraries/Errors.sol";
 import {Constants} from "../libraries/Constants.sol";
 
+interface IBaseStrategyRescue {
+    function rescueToken(address token) external;
+}
+
 /// @title YieldVault
 /// @notice ERC-4626 vault that allocates USDC across multiple yield strategies on Arbitrum.
 ///         Deposits/withdrawals always work. Strategy changes require a 24h timelock.
@@ -296,6 +300,16 @@ contract YieldVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
         circuitBreakerTripped = false;
         highWaterMark = totalAssets();
         emit CircuitBreakerReset(highWaterMark);
+    }
+
+    /// @notice Rescue a non-USDC ERC20 (e.g. stranded reward token) from a strategy contract
+    ///         back to this vault. Needed because `emergencyWithdraw` only sweeps USDC and
+    ///         reward tokens can otherwise be trapped on a strategy after removal.
+    ///         USDC is explicitly disallowed and routed through the normal withdraw path.
+    function rescueStrategyToken(address strategy, address token) external onlyOwner {
+        if (strategy == address(0) || token == address(0)) revert Errors.ZeroAddress();
+        if (token == asset()) revert Errors.ZeroAmount();
+        IBaseStrategyRescue(strategy).rescueToken(token);
     }
 
     // ─── Admin (Owner only, not timelock-gated for speed) ───

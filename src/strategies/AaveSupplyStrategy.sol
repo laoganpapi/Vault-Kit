@@ -18,7 +18,10 @@ import {OracleLib} from "../libraries/OracleLib.sol";
 contract AaveSupplyStrategy is BaseStrategy {
     using SafeERC20 for IERC20;
 
-    uint256 public constant MAX_SLIPPAGE_BPS = 10; // 0.1% for ARB→USDC reward swap
+    // 50 bps = 30 bps pool fee (0.3% tier) + 20 bps buffer for market impact and oracle drift.
+    // The prior value of 10 bps was mathematically unreachable through a 0.3% fee pool and
+    // caused `_harvest` to revert on every call — see EVMBENCH_AUDIT.md finding 1.
+    uint256 public constant MAX_SLIPPAGE_BPS = 50;
 
     IAavePool public immutable aavePool;
     IAaveRewardsController public immutable rewardsController;

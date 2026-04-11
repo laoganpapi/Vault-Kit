@@ -19,11 +19,17 @@ contract AaveLeverageStrategy is BaseStrategy {
     using SafeERC20 for IERC20;
 
     // ─── Constants ───
-    uint256 public constant TARGET_LTV_BPS = 7_000; // 70% LTV target per loop
-    uint256 public constant MAX_LOOPS = 6; // ~3.3x multiplier; same-asset USDC loop, no price liquidation
-    uint256 public constant MIN_HEALTH_FACTOR = 1.8e18; // 80% buffer above liquidation; safe for USDC-USDC
-    uint256 public constant EMERGENCY_HEALTH_FACTOR = 1.5e18; // Unwind floor
-    uint256 public constant MAX_SLIPPAGE_BPS = 10; // 0.1% for reward swaps
+    // Same-asset USDC loop: no price liquidation risk, so the safety buffer can be
+    // tighter than for a cross-asset leverage position. MIN_HF = 1.3 gives a 30%
+    // buffer above Aave's 1.0 liquidation threshold. The prior 1.8 floor combined
+    // with a fixed 70% LTV-of-available made the 2nd loop unconditionally revert
+    // regardless of deposit size (EVMBENCH_AUDIT.md finding 3).
+    uint256 public constant MAX_LOOPS = 6;
+    uint256 public constant MIN_HEALTH_FACTOR = 1.3e18; // Deposit floor; ~30% buffer
+    uint256 public constant EMERGENCY_HEALTH_FACTOR = 1.15e18; // Unwind floor
+    uint256 public constant MIN_LOOP_BORROW = 100e6; // Dust threshold: 100 USDC
+    // 50 bps = 30 bps pool fee (0.3% tier) + 20 bps buffer; see EVMBENCH_AUDIT.md finding 1.
+    uint256 public constant MAX_SLIPPAGE_BPS = 50;
 
     // ─── Immutables ───
     IAavePool public immutable aavePool;
@@ -81,42 +87,68 @@ contract AaveLeverageStrategy is BaseStrategy {
     // ─── Internal Implementation ───
 
     function _deposit(uint256 amount) internal override returns (uint256 deployed) {
-        uint256 totalSupplied;
+        uint256 loopCount;
         uint256 totalBorrowed;
 
         // First supply
         aavePool.supply(address(usdc), amount, address(this), 0);
-        totalSupplied = amount;
 
-        // Loop: borrow at target LTV, re-supply
+        // Loop: borrow up to MIN_HEALTH_FACTOR floor (not a fixed LTV fraction), re-supply.
+        //
+        // Safe borrow derivation:
+        //   HF_after = (collateral + x) * liqThreshold / (debt + x) >= MIN_HEALTH_FACTOR
+        //   Solving for x:
+        //     x <= (collateral * liqThreshold - MIN_HEALTH_FACTOR * debt) / (MIN_HEALTH_FACTOR - liqThreshold)
+        //
+        // All values in base currency (USD, 8 decimals) from Aave. liqThreshold is bps (out of 10000).
         for (uint256 i; i < MAX_LOOPS;) {
-            (,, uint256 availableBorrow,,,) = aavePool.getUserAccountData(address(this));
+            (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase,
+             uint256 liqThresholdBps,,) = aavePool.getUserAccountData(address(this));
 
-            // Aave reports available borrows in base currency (USD, 8 decimals)
-            // Convert to USDC (6 decimals): availableBorrow / 1e2
-            uint256 borrowableUsdc = availableBorrow / 1e2;
+            // Convert MIN_HEALTH_FACTOR (1e18) and liqThresholdBps to a comparable scale.
+            // Work in 1e4 units for HF to match liqThresholdBps precision:
+            //   hfScaled = MIN_HEALTH_FACTOR / 1e14    (1.3e18 -> 13000 "bps-HF")
+            uint256 hfScaled = MIN_HEALTH_FACTOR / 1e14;
+            if (hfScaled <= liqThresholdBps) {
+                // MIN_HEALTH_FACTOR below liquidation threshold — misconfigured.
+                revert Errors.HealthFactorTooLow();
+            }
 
-            // Only borrow up to TARGET_LTV_BPS of what's available
-            uint256 toBorrow = (borrowableUsdc * TARGET_LTV_BPS) / Constants.MAX_BPS;
+            // Numerator in base-currency-bps units
+            uint256 numerator = totalCollateralBase * liqThresholdBps;
+            uint256 subtrahend = totalDebtBase * hfScaled;
+            if (numerator <= subtrahend) break; // Already at or below HF floor
 
-            // Minimum borrow threshold (100 USDC) to avoid dust
-            if (toBorrow < 100e6) break;
+            uint256 safeBorrowBase = (numerator - subtrahend) / (hfScaled - liqThresholdBps);
+
+            // Also respect Aave's LTV cap (availableBorrowsBase is already net of debt)
+            if (safeBorrowBase > availableBorrowsBase) {
+                safeBorrowBase = availableBorrowsBase;
+            }
+
+            // Convert base (8 dec) to USDC (6 dec)
+            uint256 toBorrow = safeBorrowBase / 1e2;
+
+            // Dust threshold — stop looping once the incremental borrow is negligible
+            if (toBorrow < MIN_LOOP_BORROW) break;
 
             aavePool.borrow(address(usdc), toBorrow, 2, 0, address(this)); // 2 = variable rate
             aavePool.supply(address(usdc), toBorrow, address(this), 0);
 
-            totalSupplied += toBorrow;
             totalBorrowed += toBorrow;
+            loopCount = i + 1;
 
-            // Safety check
+            // Defense-in-depth: verify Aave's reported HF still respects the floor.
+            // Using Aave's canonical calculation catches any drift between our arithmetic
+            // and the pool's internal bookkeeping (rounding, reserve factors, etc.).
             uint256 hf = healthFactor();
             if (hf < MIN_HEALTH_FACTOR) revert Errors.HealthFactorTooLow();
 
             unchecked { ++i; }
         }
 
-        deployed = amount; // Reported as the net capital deployed
-        emit Looped(MAX_LOOPS, totalSupplied, totalBorrowed);
+        deployed = amount; // Net capital deployed (leverage is internal)
+        emit Looped(loopCount, amount + totalBorrowed, totalBorrowed);
     }
 
     function _withdraw(uint256 amount) internal override returns (uint256 withdrawn) {
@@ -226,28 +258,55 @@ contract AaveLeverageStrategy is BaseStrategy {
     }
 
     function _emergencyWithdraw() internal override returns (uint256 recovered) {
-        // Fully unwind all loops — repay all debt, withdraw all collateral
-        uint256 maxIterations = MAX_LOOPS * 3;
+        // Fully unwind all loops. Aave rejects any withdraw that would break HF < 1, so
+        // we can only withdraw a bounded slice of collateral per iteration (compute it
+        // from `EMERGENCY_HEALTH_FACTOR`), then immediately repay from the freed USDC.
+        // The loop converges geometrically and fully unwinds within ~2*MAX_LOOPS iterations.
+        //
+        // Prior version requested `min(supplied, debt)` in one shot, which Aave rejected
+        // with HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD on any position deeper than
+        // a single loop — see EVMBENCH_AUDIT.md finding 4.
+
+        uint256 maxIterations = MAX_LOOPS * 4;
+        uint256 zeroFreedCount;
 
         for (uint256 i; i < maxIterations;) {
-            uint256 debt = debtUsdc.balanceOf(address(this));
-            if (debt == 0) break;
+            (uint256 totalCollateralBase, uint256 totalDebtBase,, uint256 liqThresholdBps,,) =
+                aavePool.getUserAccountData(address(this));
 
-            // Withdraw max possible
-            uint256 supplied = aUsdc.balanceOf(address(this));
-            if (supplied == 0) break;
+            if (totalDebtBase == 0) break; // Debt cleared — exit and drain collateral below
 
-            // Withdraw up to debt amount to repay
-            uint256 toWithdraw = supplied > debt ? debt : supplied;
+            // Max safe withdraw keeps HF >= EMERGENCY_HEALTH_FACTOR:
+            //   (collateral - x) * liqThreshold / debt >= EMERGENCY_HEALTH_FACTOR
+            //   x <= collateral - (EMERGENCY_HEALTH_FACTOR * debt / liqThreshold)
+            uint256 hfScaled = EMERGENCY_HEALTH_FACTOR / 1e14; // bps-HF
+            uint256 minCollateralBase = (hfScaled * totalDebtBase) / liqThresholdBps;
+            uint256 safeWithdrawBase =
+                totalCollateralBase > minCollateralBase ? totalCollateralBase - minCollateralBase : 0;
+
+            uint256 toWithdraw = safeWithdrawBase / 1e2; // base (8 dec) → USDC (6 dec)
+            if (toWithdraw == 0) break;
+
             uint256 got = aavePool.withdraw(address(usdc), toWithdraw, address(this));
+            if (got == 0) {
+                zeroFreedCount++;
+                if (zeroFreedCount >= 2) break;
+                unchecked { ++i; }
+                continue;
+            }
+            zeroFreedCount = 0;
 
-            // Repay
-            aavePool.repay(address(usdc), got, 2, address(this));
+            // Repay as much debt as possible with the freed USDC
+            uint256 debtUsdcBal = debtUsdc.balanceOf(address(this));
+            uint256 toRepay = got > debtUsdcBal ? debtUsdcBal : got;
+            if (toRepay > 0) {
+                aavePool.repay(address(usdc), toRepay, 2, address(this));
+            }
 
             unchecked { ++i; }
         }
 
-        // Withdraw any remaining collateral
+        // Withdraw any remaining collateral now that debt is cleared (or as much as possible).
         uint256 remainingSupply = aUsdc.balanceOf(address(this));
         if (remainingSupply > 0) {
             aavePool.withdraw(address(usdc), type(uint256).max, address(this));
