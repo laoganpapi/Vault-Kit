@@ -1,0 +1,134 @@
+name: Vault-Kit audit
+
+# Reusable workflow: audits Solidity files in a repo with Vault-Kit
+# and posts a summary comment on PRs. Copy this file into
+# `.github/workflows/vault-kit.yml` in any Solidity repo.
+#
+# Triggers on PRs that touch .sol files and on pushes to main.
+# Fails the PR if Critical or High findings are present (benchmark mode).
+
+on:
+  pull_request:
+    paths: ['**/*.sol']
+  push:
+    branches: [main]
+    paths: ['**/*.sol']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # If running this workflow inside the Vault-Kit repo itself,
+      # use the local build. In downstream consumers, vault-kit comes
+      # from npm via `npx --yes vault-kit`.
+      - name: Build Vault-Kit (self-audit only)
+        if: github.repository == 'laoganpapi/Vault-Kit'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Resolve audit target
+        id: target
+        run: |
+          if [ -d "contracts" ]; then
+            echo "path=contracts" >> "$GITHUB_OUTPUT"
+          elif [ -d "src" ]; then
+            echo "path=src" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Vault-Kit audit
+        id: audit
+        run: |
+          TARGET="${{ steps.target.outputs.path }}"
+          if [ "${{ github.repository }}" = "laoganpapi/Vault-Kit" ]; then
+            AUDIT="node dist/src/cli.js"
+          else
+            AUDIT="npx --yes vault-kit"
+          fi
+
+          set +e
+          $AUDIT "$TARGET" --benchmark --format json > audit.json
+          BENCHMARK_EXIT=$?
+          $AUDIT "$TARGET" --format markdown --output audit.md
+          set -e
+
+          {
+            echo "## Vault-Kit Security Audit"
+            echo ""
+            echo "\`\`\`"
+            node -e "
+              const r = require('./audit.json');
+              const s = r.summary;
+              console.log('Score:     ' + s.score + '/100 [' + s.riskLevel + ']');
+              console.log('Critical:  ' + s.critical);
+              console.log('High:      ' + s.high);
+              console.log('Medium:    ' + s.medium);
+              console.log('Low:       ' + s.low);
+              console.log('Files:     ' + s.filesAnalyzed);
+              console.log('Contracts: ' + s.contractsAnalyzed);
+              console.log('Lines:     ' + s.linesOfCode);
+            "
+            echo "\`\`\`"
+            echo ""
+            echo "See the full report in the \`audit-report\` artifact."
+          } > audit-summary.md
+
+          echo "exit=$BENCHMARK_EXIT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload full audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: |
+            audit.md
+            audit.json
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('audit-summary.md', 'utf8');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith('## Vault-Kit Security Audit')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail PR on HIGH+ findings
+        if: steps.audit.outputs.exit != '0'
+        run: |
+          echo "Vault-Kit detected Critical/High findings. Fix them before merging."
+          exit 1

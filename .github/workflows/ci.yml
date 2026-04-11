@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20.x', '22.x']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (tsc --noEmit)
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Smoke — pristine.sol must be 100/100 with no findings
+        run: |
+          set +e
+          node dist/src/cli.js test/fixtures/pristine.sol --format json > /tmp/pristine.json
+          EXIT=$?
+          set -e
+          if [ "$EXIT" != "0" ]; then
+            echo "Expected exit 0 on pristine fixture, got $EXIT"
+            cat /tmp/pristine.json
+            exit 1
+          fi
+          TOTAL=$(node -e "const r = require('/tmp/pristine.json'); console.log(r.summary.totalFindings);")
+          if [ "$TOTAL" != "0" ]; then
+            echo "Expected 0 findings on pristine fixture, got $TOTAL"
+            cat /tmp/pristine.json
+            exit 1
+          fi
+          echo "Pristine smoke OK"
+
+      - name: Smoke — safe.sol score must be >= 70
+        run: |
+          set +e
+          node dist/src/cli.js test/fixtures/safe.sol --format json > /tmp/safe.json
+          set -e
+          SCORE=$(node -e "const r = require('/tmp/safe.json'); console.log(r.summary.score);")
+          if [ "$SCORE" -lt "70" ]; then
+            echo "Expected safe.sol score >= 70, got $SCORE"
+            exit 1
+          fi
+          echo "safe.sol smoke OK: $SCORE/100"
+
+      - name: Smoke — evmbench fixture must detect all HIGH bug classes
+        run: |
+          set +e
+          node dist/src/cli.js test/fixtures/evmbench-style.sol --benchmark --format json > /tmp/bench.json
+          EXIT=$?
+          set -e
+          if [ "$EXIT" != "1" ]; then
+            echo "Expected exit 1 (HIGH findings present), got $EXIT"
+            exit 1
+          fi
+          COUNT=$(node -e "const r = require('/tmp/bench.json'); console.log(r.summary.critical + r.summary.high);")
+          if [ "$COUNT" -lt "25" ]; then
+            echo "Expected >= 25 HIGH+ findings on evmbench fixture, got $COUNT"
+            exit 1
+          fi
+          echo "Benchmark smoke OK: $COUNT HIGH+ findings"
+
+      - name: Smoke — ArbitrumVault must score 100/100 in benchmark mode
+        run: |
+          set +e
+          node dist/src/cli.js contracts/src/ArbitrumVault.sol --benchmark --format json > /tmp/vault.json
+          EXIT=$?
+          set -e
+          if [ "$EXIT" != "0" ]; then
+            echo "Expected exit 0 (no HIGH+ findings on hardened vault), got $EXIT"
+            cat /tmp/vault.json
+            exit 1
+          fi
+          SCORE=$(node -e "const r = require('/tmp/vault.json'); console.log(r.summary.score);")
+          if [ "$SCORE" != "100" ]; then
+            echo "Expected vault score 100, got $SCORE"
+            exit 1
+          fi
+          echo "Vault benchmark smoke OK: $SCORE/100"
+
+      - name: Detector count must be 35
+        run: |
+          COUNT=$(node dist/src/cli.js --list-detectors | grep -Ec '^[a-z][a-z0-9-]+\s')
+          if [ "$COUNT" -ne "35" ]; then
+            echo "Expected 35 detectors, got $COUNT"
+            exit 1
+          fi
+          echo "Detector count OK: $COUNT"
+
+      - name: npm pack dry-run
+        run: npm pack --dry-run

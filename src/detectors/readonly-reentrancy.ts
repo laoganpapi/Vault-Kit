@@ -2,6 +2,7 @@ import { BaseDetector } from './base';
 import { AnalysisContext } from '../core/context';
 import { Finding, Severity, Confidence, VulnerabilityCategory } from '../core/types';
 import { walkAST } from '../utils/ast-helpers';
+import { findStateChangesAfterCalls } from '../analyzers/control-flow';
 
 const READONLY_REENTRANCY = 'Read-Only Reentrancy' as VulnerabilityCategory;
 
@@ -85,6 +86,12 @@ export class ReadOnlyReentrancyDetector extends BaseDetector {
     return findings;
   }
 
+  /**
+   * Collects state variables that are modified AFTER an external call in
+   * any non-view function. Only these create a read-only reentrancy surface:
+   * CEI-compliant writes (before the external call) leave state consistent
+   * during the call and cannot expose stale reads to a view function.
+   */
   private getVarsAroundExternalCalls(contract: any, stateVarNames: Set<string>): Set<string> {
     const vars = new Set<string>();
 
@@ -95,37 +102,17 @@ export class ReadOnlyReentrancyDetector extends BaseDetector {
       const body = (fn.node as any).body;
       if (!body?.statements) continue;
 
-      // Check if this function makes external calls
-      let hasExternalCall = false;
-      walkAST(body, (node: any) => {
-        if (node.type === 'FunctionCall') {
-          const expr = node.expression;
-          const ma = expr?.type === 'MemberAccess'
-            ? expr
-            : (expr?.type === 'NameValueExpression' ? expr.expression : null);
-          if (ma && ['call', 'send', 'transfer', 'delegatecall'].includes(ma.memberName)) {
-            hasExternalCall = true;
+      const violations = findStateChangesAfterCalls(body, stateVarNames);
+      for (const { stateChange } of violations) {
+        walkAST(stateChange, (n: any) => {
+          if (n.type === 'Identifier' && stateVarNames.has(n.name)) {
+            vars.add(n.name);
           }
-        }
-      });
-
-      if (!hasExternalCall) continue;
-
-      // Collect state variables written in this function
-      walkAST(body, (node: any) => {
-        if (
-          node.type === 'BinaryOperation' &&
-          ['=', '+=', '-=', '*=', '/='].includes(node.operator)
-        ) {
-          const left = node.left;
-          if (left?.type === 'Identifier' && stateVarNames.has(left.name)) {
-            vars.add(left.name);
+          if (n.type === 'IndexAccess' && n.base?.type === 'Identifier' && stateVarNames.has(n.base.name)) {
+            vars.add(n.base.name);
           }
-          if (left?.type === 'IndexAccess' && left.base?.type === 'Identifier' && stateVarNames.has(left.base.name)) {
-            vars.add(left.base.name);
-          }
-        }
-      });
+        });
+      }
     }
 
     return vars;

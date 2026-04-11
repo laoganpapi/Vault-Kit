@@ -137,7 +137,19 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  console.log(BANNER);
+  // When emitting JSON to stdout, suppress banner and human-readable chrome
+  // so stdout stays parseable. If --output is set, we're writing JSON to a
+  // file and can still show the banner on stderr for the user.
+  const jsonToStdout = args.format === 'json' && !args.output;
+  const chrome = (msg: string) => {
+    if (jsonToStdout) {
+      process.stderr.write(msg + '\n');
+    } else {
+      console.log(msg);
+    }
+  };
+
+  chrome(BANNER);
 
   // Validate input files
   for (const file of args.files) {
@@ -165,14 +177,14 @@ async function main(): Promise<void> {
     reportFormat: args.format,
     severityThreshold,
     enabledDetectors: args.enable,
-    disabledDetectors: args.gas ? args.disable : [...(args.disable || [])],
+    disabledDetectors: [...(args.disable || [])],
     verbose: args.verbose,
     gasAnalysis: args.gas,
   };
 
   if (args.verbose) {
-    console.log(`  Analyzing ${config.files.length} path(s)...`);
-    console.log('');
+    chrome(`  Analyzing ${config.files.length} path(s)...`);
+    chrome('');
   }
 
   const engine = new AuditEngine(config);
@@ -189,7 +201,9 @@ async function main(): Promise<void> {
       // Also print summary to console
       printSummary(result);
     } else {
-      console.log(report);
+      // JSON to stdout should be clean; other formats print normally
+      process.stdout.write(report);
+      if (!jsonToStdout) process.stdout.write('\n');
     }
 
     // Exit with code 1 if critical/high findings

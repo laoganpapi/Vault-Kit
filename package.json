@@ -1,20 +1,27 @@
 {
   "name": "vault-kit",
   "version": "1.0.0",
-  "description": "Enterprise-grade smart contract security auditor. Static analysis engine for Solidity with 18+ vulnerability detectors, control flow analysis, and professional audit report generation.",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "Enterprise-grade smart contract security auditor. Static analysis for Solidity with 30 vulnerability detectors covering reentrancy, access control, flash loans, oracle manipulation, share inflation, MEV, and more. evmbench-aligned benchmark mode for HIGH-severity CI gating.",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "bin": {
     "vault-kit": "./bin/vault-kit.js"
   },
+  "files": [
+    "bin/",
+    "dist/src/",
+    "CLAUDE.md",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
-    "start": "node dist/cli.js",
-    "audit": "node dist/cli.js",
+    "start": "node dist/src/cli.js",
+    "audit": "node dist/src/cli.js",
     "test": "node --test dist/test/**/*.test.js",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "keywords": [
     "solidity",
@@ -25,8 +32,20 @@
     "ethereum",
     "blockchain",
     "vulnerability-detection",
-    "defi"
+    "defi",
+    "evmbench",
+    "reentrancy",
+    "oracle",
+    "erc4626"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/laoganpapi/Vault-Kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/laoganpapi/Vault-Kit/issues"
+  },
+  "homepage": "https://github.com/laoganpapi/Vault-Kit#readme",
   "author": "Vault-Kit",
   "license": "MIT",
   "dependencies": {

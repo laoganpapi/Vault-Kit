@@ -94,33 +94,30 @@ export class IntegerOverflowDetector extends BaseDetector {
     findings: Finding[]
   ): void {
     walkAST(body, (node: any) => {
-      if (node.type === 'UncheckedStatement') {
-        walkAST(node, (inner: any) => {
-          if (isArithmeticOp(inner)) {
-            // Check if this looks like a safe optimization (e.g., loop counter increment)
-            const isLoopIncrement = this.isLoopCounterOp(inner);
+      if (node.type !== 'UncheckedStatement') return;
+      walkAST(node, (inner: any) => {
+        // Only BinaryOperation arithmetic is flagged. Unary ++/-- (the common
+        // "unchecked { ++i }" loop-counter optimization) is a UnaryOperation
+        // node and is not matched by isArithmeticOp, so it's already excluded.
+        if (!isArithmeticOp(inner)) return;
 
-            if (!isLoopIncrement) {
-              findings.push(
-                this.createFinding(context, {
-                  title: `Unchecked arithmetic in ${contractName}.${fnName}()`,
-                  description:
-                    `Arithmetic operation '${inner.operator}' inside an unchecked block. ` +
-                    `This bypasses Solidity 0.8.0+ overflow protection. Ensure this is intentional ` +
-                    `and that overflow/underflow cannot occur or is handled.`,
-                  severity: Severity.MEDIUM,
-                  confidence: Confidence.LOW,
-                  node: inner,
-                  recommendation:
-                    'Verify that the unchecked arithmetic cannot overflow/underflow in practice. ' +
-                    'Add comments explaining why the unchecked block is safe. ' +
-                    'Consider using checked arithmetic unless gas savings are critical.',
-                })
-              );
-            }
-          }
-        });
-      }
+        findings.push(
+          this.createFinding(context, {
+            title: `Unchecked arithmetic in ${contractName}.${fnName}()`,
+            description:
+              `Arithmetic operation '${inner.operator}' inside an unchecked block. ` +
+              `This bypasses Solidity 0.8.0+ overflow protection. Ensure this is intentional ` +
+              `and that overflow/underflow cannot occur or is handled.`,
+            severity: Severity.MEDIUM,
+            confidence: Confidence.LOW,
+            node: inner,
+            recommendation:
+              'Verify that the unchecked arithmetic cannot overflow/underflow in practice. ' +
+              'Add comments explaining why the unchecked block is safe. ' +
+              'Consider using checked arithmetic unless gas savings are critical.',
+          })
+        );
+      });
     });
   }
 
@@ -158,11 +155,6 @@ export class IntegerOverflowDetector extends BaseDetector {
         }
       }
     });
-  }
-
-  private isLoopCounterOp(node: any): boolean {
-    // Simple heuristic: ++i or i++ in a for loop are typically safe
-    return node.operator === '+' || node.operator === '-';
   }
 
   private isDowncast(targetType: string, node: any): boolean {

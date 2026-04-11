@@ -1,0 +1,22 @@
+# Sources — dist/ is what we ship
+src/
+test/
+contracts/
+.github/
+
+# Build + dev artifacts
+*.tsbuildinfo
+tsconfig.json
+.gitignore
+.git/
+.env
+.DS_Store
+coverage/
+*.log
+
+# Map files (keep .d.ts.map for navigation? No — cut them to minimize package size)
+dist/**/*.map
+
+# Plan files and notes
+CLAUDE.md.bak
+*.swp
