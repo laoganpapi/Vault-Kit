@@ -21,7 +21,9 @@ library Errors {
 
     // ─── Oracle ───
     error OracleStale();
+    error OracleStaleRound();
     error OracleNegativePrice();
+    error OraclePriceOutOfBounds();
     error SequencerDown();
     error GracePeriodNotOver();
 
@@ -29,6 +31,7 @@ library Errors {
     error HealthFactorTooLow();
     error SlippageExceeded();
     error StrategyCannotDeposit();
+    error StrategyDepositReverted();
     error MaxLeverageExceeded();
     error HedgeDriftTooHigh();
 

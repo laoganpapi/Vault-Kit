@@ -37,6 +37,9 @@ contract StrategyManager is ReentrancyGuard {
     event AllocationUpdated(address indexed strategy, uint256 oldBps, uint256 newBps);
     event Rebalanced(uint256 totalDeployed);
     event StrategyHarvested(address indexed strategy, uint256 profit);
+    event StrategyDepositFailed(address indexed strategy, uint256 attemptedAmount, bytes reason);
+    event StrategyHarvestFailed(address indexed strategy, bytes reason);
+    event StrategyEmergencyWithdrawFailed(address indexed strategy, bytes reason);
 
     modifier onlyVault() {
         if (msg.sender != vault) revert Errors.NotVault();
@@ -128,12 +131,21 @@ contract StrategyManager is ReentrancyGuard {
                 uint256 toDeposit = deficit > idleUsdc ? idleUsdc : deficit;
 
                 if (toDeposit > 0) {
-                    // Transfer USDC from vault to this contract, then approve strategy
+                    // Pull USDC from vault into the manager, then call the strategy under
+                    // try/catch so one broken strategy cannot DOS rebalance for all others.
+                    // On revert, refund the pulled USDC back to the vault and emit an event
+                    // so keepers/monitoring can surface the failure.
                     usdc.safeTransferFrom(vault, address(this), toDeposit);
                     usdc.safeIncreaseAllowance(config.strategy, toDeposit);
-                    uint256 deployed = strat.deposit(toDeposit);
-                    totalDeployed += deployed;
-                    idleUsdc -= toDeposit;
+                    try strat.deposit(toDeposit) returns (uint256 deployed) {
+                        totalDeployed += deployed;
+                        idleUsdc -= toDeposit;
+                    } catch (bytes memory reason) {
+                        // Reset any unused allowance and return funds to the vault.
+                        usdc.forceApprove(config.strategy, 0);
+                        usdc.safeTransfer(vault, toDeposit);
+                        emit StrategyDepositFailed(config.strategy, toDeposit, reason);
+                    }
                 }
             }
 
@@ -175,8 +187,11 @@ contract StrategyManager is ReentrancyGuard {
 
     // ─── Harvesting ───
 
-    /// @notice Harvest all active strategies
-    /// @return totalProfit Combined USDC profit
+    /// @notice Harvest all active strategies. Individual strategy failures are isolated
+    ///         with try/catch so that one broken strategy cannot DOS the entire harvest
+    ///         pipeline — an important property because `YieldVault.harvest` also calls
+    ///         `rebalance` afterwards, and both should still run if one strategy is stuck.
+    /// @return totalProfit Combined USDC profit (only from strategies that harvested successfully)
     function harvestAll() external onlyVault nonReentrant returns (uint256 totalProfit) {
         uint256 len = strategies.length;
 
@@ -187,19 +202,30 @@ contract StrategyManager is ReentrancyGuard {
                 continue;
             }
 
-            uint256 profit = IStrategy(config.strategy).harvest();
-            if (profit > 0) {
-                totalProfit += profit;
-                emit StrategyHarvested(config.strategy, profit);
+            try IStrategy(config.strategy).harvest() returns (uint256 profit) {
+                if (profit > 0) {
+                    totalProfit += profit;
+                    emit StrategyHarvested(config.strategy, profit);
+                }
+                config.lastHarvest = block.timestamp;
+            } catch (bytes memory reason) {
+                emit StrategyHarvestFailed(config.strategy, reason);
+                // Do not advance lastHarvest — the strategy will be retried next cycle.
             }
-            config.lastHarvest = block.timestamp;
 
             unchecked { ++i; }
         }
     }
 
-    /// @notice Emergency withdraw from all strategies
-    /// @return totalRecovered Total USDC recovered
+    /// @notice Emergency withdraw from all strategies. Individual strategy failures are
+    ///         isolated with try/catch so that one broken strategy cannot block recovery of
+    ///         funds from the rest of the vault — this is the most critical property of
+    ///         the entire contract: under adverse conditions the guardian must always be
+    ///         able to retrieve as much capital as possible, even if one strategy is stuck.
+    ///         Strategies whose emergencyWithdraw fails remain marked inactive (state was
+    ///         already cleared pre-call) so they cannot receive more capital; an event is
+    ///         emitted so off-chain tooling can surface the stuck position for manual recovery.
+    /// @return totalRecovered Total USDC recovered across all strategies
     function emergencyWithdrawAll() external onlyVault nonReentrant returns (uint256 totalRecovered) {
         uint256 len = strategies.length;
 
@@ -210,15 +236,22 @@ contract StrategyManager is ReentrancyGuard {
                 continue;
             }
 
-            // Clear state BEFORE external call (CEI)
+            // Clear state BEFORE external call (CEI) — even if the call reverts and is
+            // caught below, the strategy is permanently retired from the active set.
             address stratAddr = config.strategy;
             totalAllocationBps -= config.allocationBps;
             config.active = false;
             config.allocationBps = 0;
             isStrategy[stratAddr] = false;
 
-            uint256 recovered = IStrategy(stratAddr).emergencyWithdraw();
-            totalRecovered += recovered;
+            try IStrategy(stratAddr).emergencyWithdraw() returns (uint256 recovered) {
+                totalRecovered += recovered;
+            } catch (bytes memory reason) {
+                emit StrategyEmergencyWithdrawFailed(stratAddr, reason);
+                // Continue to the next strategy — the guardian prioritizes recovery breadth
+                // over any individual stuck position. Stuck funds can be handled via the
+                // vault's `rescueStrategyToken` passthrough after the emergency stabilizes.
+            }
 
             unchecked { ++i; }
         }

@@ -341,6 +341,12 @@ contract YieldVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
     // ─── Internal ───
 
     /// @notice Ensure enough idle USDC for a withdrawal. Pull from strategies if needed.
+    /// @dev    Partial fills are not a silent loss vector: if the strategies collectively
+    ///         cannot produce `amount`, the subsequent `safeTransfer(receiver, assets)` in
+    ///         the calling `withdraw`/`redeem` will revert on insufficient balance,
+    ///         atomically rolling back the preceding share burn. The user's shares are
+    ///         preserved. This is a DoS failure mode (withdrawal blocked until strategies
+    ///         can liquidate) but is not a loss-of-funds vector.
     function _ensureIdle(uint256 amount) internal {
         uint256 idle = IERC20(asset()).balanceOf(address(this));
         if (idle >= amount) return;

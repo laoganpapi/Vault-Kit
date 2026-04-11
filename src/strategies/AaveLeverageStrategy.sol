@@ -12,9 +12,10 @@ import {Errors} from "../libraries/Errors.sol";
 import {OracleLib} from "../libraries/OracleLib.sol";
 
 /// @title AaveLeverageStrategy
-/// @notice Loops USDC on Aave V3: supply → borrow → supply (up to 5 loops at 70% LTV).
+/// @notice Loops USDC on Aave V3: supply → borrow → supply (up to 6 loops, HF-bounded).
 ///         Earns net supply-borrow spread + ARB incentive rewards.
-///         Health factor floor: 1.8x (revert on deposit if breached), emergency at 1.5x.
+///         Health factor floor: 1.3x (revert on deposit if breached), emergency at 1.15x.
+///         Safe for same-asset USDC loops because there is no cross-asset price risk.
 contract AaveLeverageStrategy is BaseStrategy {
     using SafeERC20 for IERC20;
 
@@ -223,7 +224,7 @@ contract AaveLeverageStrategy is BaseStrategy {
         assets[0] = address(aUsdc);
         assets[1] = address(debtUsdc);
 
-        (, uint256[] memory claimed) = rewardsController.claimAllRewards(assets, address(this));
+        rewardsController.claimAllRewards(assets, address(this));
 
         // Swap ARB → USDC
         uint256 arbBalance = arbToken.balanceOf(address(this));

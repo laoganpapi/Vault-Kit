@@ -9,6 +9,13 @@ library OracleLib {
     uint256 internal constant STALENESS_THRESHOLD = 3600; // 1 hour
     uint256 internal constant SEQUENCER_GRACE_PERIOD = 3600; // 1 hour
 
+    // Plausibility bounds for a USD-pair Chainlink feed (8 decimals).
+    // MIN_PRICE_8DEC: $0.0001 — rejects "zero" and aggregator min-circuit-breaker pins.
+    // MAX_PRICE_8DEC: $1_000_000 — rejects aggregator max-circuit-breaker pins for
+    // any asset in this vault (USDC, ARB, ETH); adjust per-feed if a new asset is added.
+    int256 internal constant MIN_PRICE_8DEC = 1e4;
+    int256 internal constant MAX_PRICE_8DEC = 1e14;
+
     /// @notice Check Arbitrum sequencer uptime before any oracle read
     function checkSequencer() internal view {
         IChainlinkAggregator sequencer = IChainlinkAggregator(Constants.CHAINLINK_SEQUENCER_UPTIME);
@@ -23,15 +30,27 @@ library OracleLib {
         }
     }
 
-    /// @notice Get price from Chainlink feed with staleness + sequencer checks
+    /// @notice Get price from Chainlink feed with staleness, sequencer, round-completeness
+    ///         and plausibility-bound checks. Reverts on any failure — callers rely on
+    ///         this function as the single source of oracle truth.
     /// @param feed Chainlink aggregator address
-    /// @return price Price scaled to feed decimals
+    /// @return price Price scaled to feed decimals (8 for USD pairs)
     function getPrice(IChainlinkAggregator feed) internal view returns (uint256 price) {
         checkSequencer();
 
-        (, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();
+        (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) =
+            feed.latestRoundData();
+
+        // Reject incomplete or stale rounds — an `answeredInRound` older than `roundId`
+        // means the aggregator is carrying forward a prior round's answer.
+        if (updatedAt == 0) revert Errors.OracleStaleRound();
+        if (answeredInRound < roundId) revert Errors.OracleStaleRound();
 
         if (answer <= 0) revert Errors.OracleNegativePrice();
+        if (answer < MIN_PRICE_8DEC || answer > MAX_PRICE_8DEC) {
+            revert Errors.OraclePriceOutOfBounds();
+        }
+
         if (block.timestamp - updatedAt > STALENESS_THRESHOLD) revert Errors.OracleStale();
 
         price = uint256(answer);

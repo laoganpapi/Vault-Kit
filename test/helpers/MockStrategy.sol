@@ -116,4 +116,15 @@ contract MockStrategy is IStrategy {
     function simulateYield(uint256 amount) external {
         mockTotalAssets += amount;
     }
+
+    /// @notice Mirrors BaseStrategy.rescueToken so the vault's rescueStrategyToken
+    ///         passthrough can sweep non-USDC balances in tests. Gated on vault only.
+    function rescueToken(address token) external {
+        require(msg.sender == vault, "MockStrategy: !vault");
+        require(token != address(usdc), "MockStrategy: USDC excluded");
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        if (bal > 0) {
+            IERC20(token).safeTransfer(vault, bal);
+        }
+    }
 }

@@ -55,15 +55,19 @@ contract VaultRouter {
         shares = vault.deposit(assets, receiver);
     }
 
-    /// @notice Deposit native ETH — wraps to WETH, swaps to USDC, deposits to vault
+    /// @notice Deposit native ETH — wraps to WETH, swaps to USDC, deposits to vault.
+    /// @dev    On swap revert (e.g. tight `minUsdcOut`) the wrapped WETH is unwrapped and
+    ///         the ETH is refunded to the caller so funds cannot be trapped on the router.
     function depositETH(address receiver, uint256 minUsdcOut) external payable returns (uint256 shares) {
         if (msg.value == 0) revert Errors.ZeroAmount();
 
         // Wrap ETH → WETH
         weth.deposit{value: msg.value}();
 
-        // Swap WETH → USDC
-        uint256 usdcReceived = swapRouter.exactInputSingle(
+        // Swap WETH → USDC under try/catch so a revert refunds the caller instead of
+        // trapping the wrapped WETH on the router.
+        uint256 usdcReceived;
+        try swapRouter.exactInputSingle(
             ISwapRouter.ExactInputSingleParams({
                 tokenIn: Constants.WETH,
                 tokenOut: address(usdc),
@@ -74,7 +78,16 @@ contract VaultRouter {
                 amountOutMinimum: minUsdcOut,
                 sqrtPriceLimitX96: 0
             })
-        );
+        ) returns (uint256 out) {
+            usdcReceived = out;
+        } catch {
+            // Unwrap back to ETH and refund the caller. Re-revert so the caller sees
+            // a clean failure rather than a silent no-op deposit of 0.
+            weth.withdraw(msg.value);
+            (bool refunded,) = msg.sender.call{value: msg.value}("");
+            require(refunded, "VaultRouter: ETH refund failed");
+            revert Errors.SlippageExceeded();
+        }
 
         // Deposit USDC into vault
         shares = vault.deposit(usdcReceived, receiver);

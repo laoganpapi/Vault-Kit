@@ -8,6 +8,7 @@ interface IYieldVault {
     function harvest() external;
     function rebalance() external;
     function totalAssets() external view returns (uint256);
+    function totalSupply() external view returns (uint256);
 }
 
 /// @title Harvester
@@ -17,14 +18,24 @@ interface IYieldVault {
 contract Harvester is Ownable2Step {
     IYieldVault public immutable vault;
 
+    // Scale used to track share price (totalAssets * SHARE_PRICE_SCALE / totalSupply).
+    // 1e18 gives enough precision for any realistic assets/shares ratio and matches ERC-4626
+    // convention for exchange-rate computations.
+    uint256 public constant SHARE_PRICE_SCALE = 1e18;
+
     uint256 public minHarvestInterval = 6 hours;
     uint256 public lastHarvestTime;
-    uint256 public lastTotalAssets;
 
-    // Minimum yield threshold to trigger harvest (saves gas on low-yield periods)
-    uint256 public minYieldThresholdBps = 5; // 0.05% minimum gain to harvest
+    // Last observed share price (assets per share, scaled by SHARE_PRICE_SCALE). This is
+    // immune to deposit/withdraw-induced noise because both the numerator (totalAssets)
+    // and denominator (totalSupply) scale together on a deposit/withdraw.
+    uint256 public lastSharePrice;
 
-    event HarvestExecuted(uint256 timestamp, uint256 totalAssets);
+    // Minimum share-price growth (in bps) required to trigger harvest. Replaces the prior
+    // `minYieldThresholdBps` on raw totalAssets, which was fooled by deposits.
+    uint256 public minYieldThresholdBps = 5; // 0.05% minimum share-price gain to harvest
+
+    event HarvestExecuted(uint256 timestamp, uint256 totalAssets, uint256 sharePrice);
     event RebalanceExecuted(uint256 timestamp);
     event MinIntervalUpdated(uint256 oldInterval, uint256 newInterval);
     event MinYieldThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
@@ -51,16 +62,26 @@ contract Harvester is Ownable2Step {
         emit RebalanceExecuted(block.timestamp);
     }
 
+    /// @notice Current share price in `SHARE_PRICE_SCALE`-scaled units
+    function currentSharePrice() public view returns (uint256) {
+        uint256 supply = vault.totalSupply();
+        if (supply == 0) return 0;
+        return (vault.totalAssets() * SHARE_PRICE_SCALE) / supply;
+    }
+
     /// @notice Check if harvest conditions are met (for Gelato/Chainlink keeper)
     function canHarvest() public view returns (bool) {
         // Time check
         if (block.timestamp < lastHarvestTime + minHarvestInterval) return false;
 
-        // Yield check — only harvest if assets have grown meaningfully
-        uint256 currentAssets = vault.totalAssets();
-        if (lastTotalAssets > 0) {
-            uint256 growth = currentAssets > lastTotalAssets ? currentAssets - lastTotalAssets : 0;
-            uint256 growthBps = (growth * 10_000) / lastTotalAssets;
+        // Yield check — only harvest if the SHARE PRICE has grown meaningfully.
+        // Raw totalAssets growth would be fooled by deposits that happened since the
+        // last harvest; share-price (assets/shares) ignores deposits/withdrawals by
+        // construction and only grows when real yield accrues to the vault.
+        uint256 current = currentSharePrice();
+        if (lastSharePrice > 0) {
+            uint256 growth = current > lastSharePrice ? current - lastSharePrice : 0;
+            uint256 growthBps = (growth * 10_000) / lastSharePrice;
             if (growthBps < minYieldThresholdBps) return false;
         }
 
@@ -106,7 +127,8 @@ contract Harvester is Ownable2Step {
     function _executeHarvest() internal {
         vault.harvest();
         lastHarvestTime = block.timestamp;
-        lastTotalAssets = vault.totalAssets();
-        emit HarvestExecuted(block.timestamp, lastTotalAssets);
+        uint256 sharePrice = currentSharePrice();
+        lastSharePrice = sharePrice;
+        emit HarvestExecuted(block.timestamp, vault.totalAssets(), sharePrice);
     }
 }
