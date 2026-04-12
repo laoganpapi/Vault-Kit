@@ -1,0 +1,207 @@
+name: Verify
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'claude/**'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    outputs:
+      has_arbitrum_rpc: ${{ steps.secrets.outputs.has_arbitrum_rpc }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Forge version
+        run: forge --version
+
+      - name: Forge build
+        run: forge build --sizes
+
+      - name: Check optional secrets
+        id: secrets
+        env:
+          ARBITRUM_RPC_URL: ${{ secrets.ARBITRUM_RPC_URL }}
+        run: |
+          if [ -n "$ARBITRUM_RPC_URL" ]; then
+            echo "has_arbitrum_rpc=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_arbitrum_rpc=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  unit-and-fuzz:
+    name: Unit + Fuzz (10k runs)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Forge test
+        env:
+          FOUNDRY_FUZZ_RUNS: 10000
+        run: forge test -vv --no-match-contract "Invariant|Fork"
+
+  invariant:
+    name: Invariant Suite
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Forge invariant
+        env:
+          FOUNDRY_INVARIANT_RUNS: 1000
+          FOUNDRY_INVARIANT_DEPTH: 100
+        run: forge test --match-contract Invariant -vv
+
+  fork:
+    name: Fork Tests (Arbitrum Mainnet)
+    needs: build
+    runs-on: ubuntu-latest
+    if: needs.build.outputs.has_arbitrum_rpc == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Forge fork test
+        env:
+          ARBITRUM_RPC_URL: ${{ secrets.ARBITRUM_RPC_URL }}
+        run: forge test --match-contract Fork --fork-url "$ARBITRUM_RPC_URL" -vv
+
+  fork-skipped:
+    name: Fork Tests (SKIPPED — secret missing)
+    needs: build
+    runs-on: ubuntu-latest
+    if: needs.build.outputs.has_arbitrum_rpc != 'true'
+    steps:
+      - name: Explain skip
+        run: |
+          echo "::warning::Fork tests skipped because the ARBITRUM_RPC_URL secret is not set."
+          echo "Add it at Settings -> Secrets and variables -> Actions -> New repository secret."
+          echo "Free options: https://www.alchemy.com (sign up, create Arbitrum mainnet app, copy URL)"
+          echo "or the public endpoint https://arb1.arbitrum.io/rpc (slower, rate-limited)."
+
+  slither:
+    name: Slither Static Analysis
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Run Slither
+        uses: crytic/slither-action@v0.4.0
+        id: slither
+        continue-on-error: true
+        with:
+          fail-on: medium
+          slither-args: --filter-paths "lib|test|script" --exclude-informational --exclude-low
+          sarif: slither.sarif
+
+      - name: Upload SARIF
+        if: always() && hashFiles('slither.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: slither.sarif
+
+      - name: Fail if slither found high/medium
+        if: steps.slither.outcome == 'failure'
+        run: |
+          echo "::error::Slither reported HIGH or MEDIUM findings. See the SARIF report and the Security tab."
+          exit 1
+
+  coverage:
+    name: Coverage
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Forge coverage
+        run: forge coverage --report summary --report lcov --no-match-coverage "(test|script)"
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: warn
+
+  gas-snapshot:
+    name: Gas Snapshot
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Snapshot
+        run: forge snapshot
+
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-snapshot
+          path: .gas-snapshot
+          if-no-files-found: warn

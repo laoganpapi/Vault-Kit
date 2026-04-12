@@ -1,0 +1,83 @@
+name: Deploy to Arbitrum Sepolia
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY (all caps) to confirm you want to broadcast a transaction'
+        required: true
+        type: string
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation
+        if: ${{ github.event.inputs.confirm != 'DEPLOY' }}
+        run: |
+          echo "::error::You must type 'DEPLOY' exactly to confirm. Workflow aborted."
+          exit 1
+
+      - name: Check required secrets are present
+        env:
+          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          GUARDIAN_ADDRESS: ${{ secrets.GUARDIAN_ADDRESS }}
+          FEE_RECIPIENT: ${{ secrets.FEE_RECIPIENT }}
+        run: |
+          missing=""
+          [ -z "$ARBITRUM_SEPOLIA_RPC_URL" ] && missing="$missing ARBITRUM_SEPOLIA_RPC_URL"
+          [ -z "$DEPLOYER_PRIVATE_KEY" ] && missing="$missing DEPLOYER_PRIVATE_KEY"
+          [ -z "$GUARDIAN_ADDRESS" ] && missing="$missing GUARDIAN_ADDRESS"
+          [ -z "$FEE_RECIPIENT" ] && missing="$missing FEE_RECIPIENT"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets:$missing"
+            echo "Add them at Settings -> Secrets and variables -> Actions -> New repository secret"
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Build
+        run: forge build
+
+      - name: Broadcast deploy
+        env:
+          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          GUARDIAN_ADDRESS: ${{ secrets.GUARDIAN_ADDRESS }}
+          FEE_RECIPIENT: ${{ secrets.FEE_RECIPIENT }}
+          SEPOLIA_USDC_ADDRESS: ${{ vars.SEPOLIA_USDC_ADDRESS || '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d' }}
+          ETHERSCAN_API_KEY: ${{ secrets.ARBISCAN_API_KEY }}
+        run: |
+          VERIFY_FLAG=""
+          if [ -n "${ETHERSCAN_API_KEY:-}" ]; then
+            VERIFY_FLAG="--verify"
+          fi
+          forge script script/DeploySepolia.s.sol:DeploySepoliaScript \
+            --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" \
+            --broadcast \
+            $VERIFY_FLAG \
+            -vvv
+
+      - name: Upload broadcast artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sepolia-broadcast-${{ github.run_id }}
+          path: broadcast/
+          if-no-files-found: warn

@@ -1,0 +1,69 @@
+name: Audit Finding
+description: Track a security finding from an external auditor, contest, or bounty
+title: "[AUDIT] <short description>"
+labels: ["audit", "security"]
+body:
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+        - Informational
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: Reported by
+      description: Auditor name, contest platform, bounty program, or researcher handle
+      placeholder: "e.g. Code4rena contest #123, OpenZeppelin, 0xResearcher"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Root cause, impact, and exploit scenario (if any)
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Code location
+      description: Exact file paths and line numbers
+      placeholder: |
+        src/core/YieldVault.sol:142-148
+    validations:
+      required: true
+
+  - type: textarea
+    id: poc
+    attributes:
+      label: Proof of concept (optional)
+      description: Test case, exploit transcript, or reproduction steps
+
+  - type: textarea
+    id: remediation
+    attributes:
+      label: Proposed remediation
+      description: How should this be fixed? Link the PR/commit once addressed.
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      options:
+        - New
+        - Confirmed
+        - In progress
+        - Fixed
+        - Wont-fix
+        - Duplicate
+      default: 0
