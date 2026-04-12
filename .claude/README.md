@@ -59,12 +59,19 @@ If the same dynamic specialist appears on ≥3 projects, promote it to the bench
 9. **Self-contained briefs.** Subagents have zero context from the conversation; every prompt must include goal, files, prior findings, constraints, output format, and done criteria.
 10. **Portable by default, project overlays at the bottom.** `CLAUDE.md` has a portable body and a project-specific overlay section clearly marked.
 
-## Installing on another project
+## Installing
 
-Two ways:
+### One-shot global install (recommended)
+Run the committed installer from the repo root. It copies every agent into `~/.claude/agents/` and the portable part of `CLAUDE.md` into `~/.claude/CLAUDE.md`. Every new Claude Code session on that machine, in any directory, will inherit the full schema.
 
-### Option A — Per-project (recommended)
-Copy `.claude/` and `CLAUDE.md` into the new project. The only edit needed is the Project overlay section at the bottom of `CLAUDE.md`.
+```bash
+./.claude/install.sh
+```
+
+Re-running is safe — existing files are overwritten with the current kit. Project-local `.claude/agents/` files still override user-global ones by name, so per-project customization keeps working.
+
+### Per-project install (if you want it committed to a specific repo)
+Copy `.claude/` and `CLAUDE.md` into the new project. Edit the **Project overlay** section at the bottom of `CLAUDE.md` to reflect that project's specifics.
 
 ```bash
 cp -r Vault-Kit/.claude other-project/
@@ -72,15 +79,14 @@ cp Vault-Kit/CLAUDE.md other-project/CLAUDE.md
 # edit the Project overlay section in other-project/CLAUDE.md
 ```
 
-### Option B — User-global
-Install the agents into `~/.claude/agents/` so every project inherits them. Put the portable section of `CLAUDE.md` into `~/.claude/CLAUDE.md` for global orchestration policy; keep project-specific overlays in each repo's local `CLAUDE.md`.
+### How precedence works
+When Claude Code starts, it loads agents from both locations:
+1. `~/.claude/agents/<name>.md` — user-global baseline
+2. `<project>/.claude/agents/<name>.md` — project-local override (by filename)
 
-```bash
-mkdir -p ~/.claude/agents
-cp .claude/agents/*.md ~/.claude/agents/
-```
+Project-local wins. This lets a specific repo add, say, a persistent `solidity-auditor` without touching the global kit, or tighten the system prompt for `implementer` on a particular project.
 
-Project-local agents (in a repo's `.claude/agents/`) override user-global ones with the same name. This lets a specific project add, say, a persistent `solidity-auditor` without touching the global kit.
+The same precedence applies to `CLAUDE.md`: `~/.claude/CLAUDE.md` loads first as the portable orchestration policy, and the project's `CLAUDE.md` layers on top with its project overlay.
 
 ## Extending the kit
 
