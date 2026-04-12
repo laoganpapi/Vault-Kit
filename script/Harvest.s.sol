@@ -17,11 +17,14 @@ contract HarvestScript is Script {
 
         if (harvester.canHarvest()) {
             harvester.harvestIfNeeded();
-            console2.log("Harvest executed. Total assets:", harvester.lastTotalAssets());
+            console2.log("Harvest executed.");
+            console2.log("  Last share price:", harvester.lastSharePrice());
+            console2.log("  Current share price:", harvester.currentSharePrice());
         } else {
             console2.log("Harvest not needed yet.");
             console2.log("Last harvest:", harvester.lastHarvestTime());
             console2.log("Min interval:", harvester.minHarvestInterval());
+            console2.log("Last share price:", harvester.lastSharePrice());
         }
 
         vm.stopBroadcast();

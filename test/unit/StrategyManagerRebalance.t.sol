@@ -105,4 +105,35 @@ contract StrategyManagerRebalanceTest is Test {
             "good strat unchanged since its allocation is filled"
         );
     }
+
+    /// @notice A withdrawing strategy that reverts must not DOS user withdrawals —
+    ///         StrategyManager.withdrawFromStrategies isolates the failure per-strategy.
+    function test_userWithdrawal_isolatesBrokenStrategy() public {
+        // Make the bad strategy accept deposits, so it holds some funds we need to unwind.
+        badStrat.setDepositShouldRevert(false);
+
+        vm.prank(alice);
+        vault.deposit(10_000e6, alice);
+
+        vm.prank(harvesterAddr);
+        vault.rebalance();
+
+        // Both strategies should now hold 5k each
+        assertEq(goodStrat.totalAssets(), 5_000e6);
+        assertEq(usdc.balanceOf(address(badStrat)), 5_000e6);
+
+        // Now break withdraw on the bad strategy
+        badStrat.setWithdrawShouldRevert(true);
+
+        // Alice attempts to withdraw 4_000e6 — this fits inside the good strategy's balance
+        // so the broken bad strat does not need to be touched. Must succeed.
+        uint256 before = usdc.balanceOf(alice);
+        vm.prank(alice);
+        vault.withdraw(4_000e6, alice, alice);
+        assertEq(
+            usdc.balanceOf(alice),
+            before + 4_000e6,
+            "withdrawal succeeds against the healthy strategy"
+        );
+    }
 }

@@ -15,9 +15,11 @@ contract RevertingMockStrategy is IStrategy {
     address public immutable vault;
 
     bool public depositShouldRevert = true;
-    string public revertMessage = "RevertingMockStrategy: deposit disabled";
+    bool public withdrawShouldRevert;
+    string public revertMessage = "RevertingMockStrategy: disabled";
 
     uint256 public depositAttempts;
+    uint256 public withdrawAttempts;
 
     constructor(address usdc_, address vault_) {
         usdc = IERC20(usdc_);
@@ -37,6 +39,10 @@ contract RevertingMockStrategy is IStrategy {
     }
 
     function withdraw(uint256 amount) external override returns (uint256) {
+        withdrawAttempts++;
+        if (withdrawShouldRevert) {
+            revert(revertMessage);
+        }
         uint256 bal = usdc.balanceOf(address(this));
         if (amount > bal) amount = bal;
         if (amount > 0) usdc.safeTransfer(vault, amount);
@@ -68,6 +74,10 @@ contract RevertingMockStrategy is IStrategy {
 
     function setDepositShouldRevert(bool val) external {
         depositShouldRevert = val;
+    }
+
+    function setWithdrawShouldRevert(bool val) external {
+        withdrawShouldRevert = val;
     }
 
     function setRevertMessage(string calldata msg_) external {

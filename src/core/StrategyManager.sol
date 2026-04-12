@@ -40,6 +40,7 @@ contract StrategyManager is ReentrancyGuard {
     event StrategyDepositFailed(address indexed strategy, uint256 attemptedAmount, bytes reason);
     event StrategyHarvestFailed(address indexed strategy, bytes reason);
     event StrategyEmergencyWithdrawFailed(address indexed strategy, bytes reason);
+    event StrategyWithdrawFailed(address indexed strategy, uint256 attemptedAmount, bytes reason);
 
     modifier onlyVault() {
         if (msg.sender != vault) revert Errors.NotVault();
@@ -155,9 +156,13 @@ contract StrategyManager is ReentrancyGuard {
         emit Rebalanced(totalDeployed);
     }
 
-    /// @notice Withdraw USDC from strategies to meet a withdrawal request
-    /// @param amount USDC needed
-    /// @return withdrawn Total USDC actually withdrawn
+    /// @notice Withdraw USDC from strategies to meet a withdrawal request.
+    /// @dev    Per-strategy failures are isolated with try/catch so one broken strategy
+    ///         cannot DOS the user's withdrawal. If the total withdrawn is less than
+    ///         requested, the caller (`YieldVault._ensureIdle`) relies on the subsequent
+    ///         safeTransfer to revert atomically; the user keeps their shares.
+    /// @param  amount    USDC needed
+    /// @return withdrawn Total USDC actually withdrawn (may be less than `amount`)
     function withdrawFromStrategies(uint256 amount) external onlyVault nonReentrant returns (uint256 withdrawn) {
         uint256 remaining = amount;
         uint256 len = strategies.length;
@@ -176,9 +181,13 @@ contract StrategyManager is ReentrancyGuard {
             if (stratAssets > 0) {
                 // Withdraw proportional share, capped at strategy's total
                 uint256 toWithdraw = remaining > stratAssets ? stratAssets : remaining;
-                uint256 got = strat.withdraw(toWithdraw);
-                withdrawn += got;
-                remaining = got >= remaining ? 0 : remaining - got;
+                try strat.withdraw(toWithdraw) returns (uint256 got) {
+                    withdrawn += got;
+                    remaining = got >= remaining ? 0 : remaining - got;
+                } catch (bytes memory reason) {
+                    emit StrategyWithdrawFailed(config.strategy, toWithdraw, reason);
+                    // Move on — another strategy may be able to fulfill the remainder.
+                }
             }
 
             unchecked { ++i; }

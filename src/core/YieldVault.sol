@@ -107,6 +107,23 @@ contract YieldVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
         return IERC20(asset()).balanceOf(address(this)) + strategyManager.totalDeployedAssets();
     }
 
+    /// @notice ERC-4626 compliant: returns 0 when paused or circuit-broken so integrators
+    ///         don't attempt doomed deposits. Otherwise returns remaining headroom under
+    ///         the vault's `DEPOSIT_CAP`.
+    function maxDeposit(address) public view override returns (uint256) {
+        if (paused() || circuitBreakerTripped || _isDrawdownExceeded()) return 0;
+        uint256 current = totalAssets();
+        if (current >= DEPOSIT_CAP) return 0;
+        return DEPOSIT_CAP - current;
+    }
+
+    /// @notice ERC-4626 compliant: shares equivalent of `maxDeposit`.
+    function maxMint(address receiver) public view override returns (uint256) {
+        uint256 assetsMax = maxDeposit(receiver);
+        if (assetsMax == type(uint256).max) return type(uint256).max;
+        return previewDeposit(assetsMax);
+    }
+
     /// @notice Deposit USDC, receive vault shares
     function deposit(uint256 assets, address receiver)
         public
@@ -242,8 +259,10 @@ contract YieldVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
 
     // ─── Harvest & Rebalance ───
 
-    /// @notice Harvest yield from all strategies, take performance fee, rebalance
-    function harvest() external onlyHarvester nonReentrant {
+    /// @notice Harvest yield from all strategies, take performance fee, rebalance.
+    /// @dev    Pause-gated: when the vault is paused (e.g. emergency), the automation
+    ///         halts. Users can still withdraw via `withdraw`/`redeem` unconditionally.
+    function harvest() external onlyHarvester nonReentrant whenNotPaused {
         // Harvest profits from strategies (USDC returns to vault as idle)
         uint256 profit = strategyManager.harvestAll();
 
@@ -267,8 +286,9 @@ contract YieldVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
         _checkCircuitBreaker();
     }
 
-    /// @notice Rebalance idle USDC to strategies without harvesting
-    function rebalance() external onlyHarvester nonReentrant {
+    /// @notice Rebalance idle USDC to strategies without harvesting.
+    /// @dev    Pause-gated for the same reason as `harvest`.
+    function rebalance() external onlyHarvester nonReentrant whenNotPaused {
         uint256 idle = IERC20(asset()).balanceOf(address(this));
         if (idle == 0) revert Errors.InsufficientIdle();
 
