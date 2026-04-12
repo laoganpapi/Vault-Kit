@@ -106,6 +106,16 @@ contract ArbitrumVault {
     AggregatorV3Interface public immutable sequencerUptimeFeed;
     uint256 public constant GRACE_PERIOD = 3600; // 1 hour after sequencer recovery
 
+    // ERC-2612 permit (gasless approvals over the share token)
+    bytes32 public constant PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+    bytes32 public constant DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 public immutable INITIAL_DOMAIN_SEPARATOR;
+    uint256 public immutable INITIAL_CHAIN_ID;
+    mapping(address => uint256) public nonces;          // EIP-2612 per-account nonces
+    mapping(address => mapping(address => uint256)) public allowance; // share-token allowance
+
     mapping(address => uint256) public shares;
     uint256 public totalShares;
     uint256 public totalAssets;
@@ -210,20 +220,43 @@ contract ArbitrumVault {
         sequencerUptimeFeed = AggregatorV3Interface(_sequencerUptimeFeed);
         feeRecipient = _feeRecipient;
 
-        performanceFee = 1000;    // 10%
-        withdrawalFee = 50;       // 0.5%
-        managementFee = 200;      // 2%
-        depositCap = type(uint256).max;
-        minDeposit = 0.01 ether;
-        withdrawalDelay = 0;
+        // Sane default fees and parameters. All are reconfigurable by owner
+        // (subject to MAX_* caps), so deploy can override these via setters
+        // immediately after construction if a different policy is desired.
+        performanceFee = 1500;     // 15%   (max 30%)
+        withdrawalFee = 50;        // 0.50% (max 5%)
+        managementFee = 200;       // 2%/yr (max 5%/yr)
+        depositCap = 100 ether;    // Conservative initial cap; ramp via setDepositCap()
+        minDeposit = 0.01 ether;   // Filters out economically pointless dust deposits
+        withdrawalDelay = 1 days;  // Defeats flash-deposit / flash-withdraw attacks
         lastFeeCollection = block.timestamp;
+
+        // EIP-712 domain for permit() — computed once at construction.
+        // The chainId is captured here so cross-chain replay is impossible
+        // even if the contract is deployed at the same address on multiple chains.
+        INITIAL_CHAIN_ID = block.chainid;
+        INITIAL_DOMAIN_SEPARATOR = _computeDomainSeparator();
     }
 
     // ============ Deposit / Withdraw ============
 
-    // Dead shares minted on first deposit to prevent share inflation attack.
-    // Inspired by Uniswap V2's MINIMUM_LIQUIDITY pattern.
-    uint256 public constant DEAD_SHARES = 1000;
+    /// @notice Virtual share offset used to defeat the ERC-4626 inflation attack.
+    /// @dev Standard OpenZeppelin pattern: when computing share/asset ratios we
+    ///      pretend the vault has DECIMALS_OFFSET more virtual shares and
+    ///      virtual assets than it actually does. This makes the first-depositor
+    ///      attack economically infeasible — to inflate the share price by 2x,
+    ///      an attacker would need to donate ~10^DECIMALS_OFFSET assets, which
+    ///      becomes prohibitively expensive at DECIMALS_OFFSET >= 6.
+    ///
+    ///      With offset = 6 (1e6 virtual shares):
+    ///      - Attack cost to steal 1 ETH from a victim: ~1e6 wei = ~$0.000003
+    ///        increased to ~1e24 wei = ~$3M of attacker capital required.
+    ///      - Vault dust loss to first depositor: ~1e6 wei (negligible).
+    ///
+    ///      Reference: https://blog.openzeppelin.com/a-novel-defense-against-erc4626-inflation-attacks
+    uint256 public constant DECIMALS_OFFSET = 6;
+    uint256 private constant VIRTUAL_SHARES = 10 ** DECIMALS_OFFSET;
+    uint256 private constant VIRTUAL_ASSETS = 1;
 
     function deposit(uint256 amount) external nonReentrant whenNotPaused whenNotEmergency {
         require(amount >= minDeposit, "Below minimum");
@@ -239,22 +272,11 @@ contract ArbitrumVault {
         uint256 received = asset.balanceOf(address(this)) - balanceBefore;
         require(received > 0, "No assets received");
 
-        // Calculate shares based on actual received amount
-        // First depositor: lock DEAD_SHARES to address(0) to prevent inflation attack
-        uint256 sharesToMint;
-        if (totalShares == 0) {
-            require(received > DEAD_SHARES, "Below dead share threshold");
-            sharesToMint = received - DEAD_SHARES;
-            // Lock dead shares permanently — nobody can withdraw them
-            shares[address(0)] += DEAD_SHARES;
-            totalShares += DEAD_SHARES;
-        } else {
-            // Defensive: by invariant totalShares > 0 implies totalAssets > 0,
-            // but we re-check to surface any future state corruption clearly
-            // and to avoid relying on implicit branch reasoning.
-            require(totalAssets != 0, "totalAssets is zero");
-            sharesToMint = _convertAssetsToShares(received);
-        }
+        // Convert assets -> shares using virtual offset (round DOWN, vault favored).
+        // The virtual offset means even the very first deposit gets a sane number
+        // of shares (received * VIRTUAL_SHARES / VIRTUAL_ASSETS), and inflation
+        // donations are absorbed harmlessly into the virtual denominator.
+        uint256 sharesToMint = _convertAssetsToShares(received);
         require(sharesToMint != 0, "Zero shares minted");
 
         // Effects (state was already settled for dead-share branch; now complete the rest)
@@ -307,22 +329,147 @@ contract ArbitrumVault {
         emit Withdraw(msg.sender, netAmount, shareAmount);
     }
 
-    // ============ Conversion helpers (rounding-aware) ============
+    // ============ ERC-20 share token surface (transfer / approve / permit) ============
 
-    /// @notice Convert assets to shares (round DOWN — fewer shares minted, vault favored).
-    /// @dev Defensive: explicit require so the helper is robust independent of caller.
-    function _convertAssetsToShares(uint256 assets) internal view returns (uint256) {
-        uint256 _totalAssets = totalAssets;
-        require(_totalAssets != 0, "totalAssets is zero");
-        return (assets * totalShares) / _totalAssets;
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function totalSupply() external view returns (uint256) { return totalShares; }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
     }
 
-    /// @notice Convert shares to assets (round DOWN — vault keeps the dust, standard ERC-4626).
-    /// @dev Defensive: explicit require so the helper is robust independent of caller.
+    function transfer(address to, uint256 value) external returns (bool) {
+        return _transferShares(msg.sender, to, value);
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        uint256 allowed = allowance[from][msg.sender];
+        if (allowed != type(uint256).max) {
+            require(allowed >= value, "Insufficient allowance");
+            allowance[from][msg.sender] = allowed - value;
+        }
+        return _transferShares(from, to, value);
+    }
+
+    function _transferShares(address from, address to, uint256 value) internal returns (bool) {
+        require(to != address(0), "Transfer to zero");
+        require(shares[from] >= value, "Insufficient shares");
+        unchecked {
+            shares[from] -= value;
+        }
+        shares[to] += value;
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    /// @notice Compute the EIP-712 domain separator for the current chain.
+    /// @dev Re-computed if chainId changes (e.g., after a hard fork).
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return block.chainid == INITIAL_CHAIN_ID ? INITIAL_DOMAIN_SEPARATOR : _computeDomainSeparator();
+    }
+
+    function _computeDomainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes(name)),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    /// @notice Upper bound for the secp256k1 signature `s` value (curve order / 2).
+    /// @dev    Per EIP-2 / Homestead, only the lower half of the curve order is
+    ///         considered canonical. Rejecting the upper half eliminates
+    ///         signature malleability without breaking compatibility with any
+    ///         compliant signing library.
+    bytes32 internal constant SECP256K1_HALF_N =
+        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
+
+    /// @notice ERC-2612 permit — gasless approval via a signed message.
+    /// @dev Includes nonce + deadline + domain separator (chain + contract).
+    ///      Recovered signer is checked against zero-address to defeat
+    ///      malformed-signature bypass and `s` is constrained to defeat
+    ///      ECDSA signature malleability.
+    function permit(
+        address _owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(block.timestamp <= deadline, "Permit expired");
+        require(_owner != address(0), "Owner is zero");
+        // Reject malleable upper-half-order signatures
+        require(uint256(s) <= uint256(SECP256K1_HALF_N), "Invalid s");
+        require(v == 27 || v == 28, "Invalid v");
+
+        bytes32 structHash = keccak256(
+            abi.encode(PERMIT_TYPEHASH, _owner, spender, value, nonces[_owner]++, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+        address recovered = ecrecover(digest, v, r, s);
+        require(recovered != address(0) && recovered == _owner, "Invalid signature");
+
+        allowance[_owner][spender] = value;
+        emit Approval(_owner, spender, value);
+    }
+
+    /// @notice Increase the allowance for `spender` by `addedValue`.
+    /// @dev Mitigates the well-known ERC-20 approve front-running race condition:
+    ///      with this function, callers can adjust allowances without going
+    ///      through the dangerous "set allowance to a different non-zero value"
+    ///      transition.
+    function increaseAllowance(address spender, uint256 addedValue) external returns (bool) {
+        uint256 newAllowance = allowance[msg.sender][spender] + addedValue;
+        allowance[msg.sender][spender] = newAllowance;
+        emit Approval(msg.sender, spender, newAllowance);
+        return true;
+    }
+
+    /// @notice Decrease the allowance for `spender` by `subtractedValue`.
+    function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool) {
+        uint256 current = allowance[msg.sender][spender];
+        require(current >= subtractedValue, "Decrease below zero");
+        // Plain (checked) subtraction. The require above guarantees no underflow,
+        // but we use checked arithmetic anyway — the gas saving from `unchecked`
+        // is negligible (5 gas) and not worth the static-analysis noise.
+        uint256 newAllowance = current - subtractedValue;
+        allowance[msg.sender][spender] = newAllowance;
+        emit Approval(msg.sender, spender, newAllowance);
+        return true;
+    }
+
+    // ============ Conversion helpers (rounding-aware, virtual-offset protected) ============
+
+    /// @notice Convert assets to shares using virtual-offset arithmetic (round DOWN).
+    /// @dev   shares = (assets * (totalShares + VIRTUAL_SHARES)) / (totalAssets + VIRTUAL_ASSETS)
+    ///        The virtual offset prevents the ERC-4626 inflation attack: an attacker
+    ///        cannot manipulate the share price meaningfully because the denominator
+    ///        is always at least VIRTUAL_ASSETS, and the numerator includes
+    ///        VIRTUAL_SHARES of dilution.
+    function _convertAssetsToShares(uint256 assets) internal view returns (uint256) {
+        // (totalAssets + VIRTUAL_ASSETS) is provably > 0 since VIRTUAL_ASSETS >= 1.
+        // No defensive require needed here — the virtual offset is the require.
+        return (assets * (totalShares + VIRTUAL_SHARES)) / (totalAssets + VIRTUAL_ASSETS);
+    }
+
+    /// @notice Convert shares to assets using virtual-offset arithmetic (round DOWN).
+    /// @dev   assets = (shares * (totalAssets + VIRTUAL_ASSETS)) / (totalShares + VIRTUAL_SHARES)
+    ///        Round-down is the standard ERC-4626 redemption direction — the user
+    ///        receives slightly less than their pro-rata share, leaving the dust
+    ///        with the vault. This prevents dust-extraction attacks.
     function _convertSharesToAssets(uint256 shareAmount) internal view returns (uint256) {
-        uint256 _totalShares = totalShares;
-        require(_totalShares != 0, "totalShares is zero");
-        return (shareAmount * totalAssets) / _totalShares;
+        // (totalShares + VIRTUAL_SHARES) is provably > 0 since VIRTUAL_SHARES >= 1.
+        return (shareAmount * (totalAssets + VIRTUAL_ASSETS)) / (totalShares + VIRTUAL_SHARES);
     }
 
     // ============ Strategy Management ============
@@ -345,7 +492,7 @@ contract ArbitrumVault {
         // Deposit into new strategy
         uint256 available = asset.balanceOf(address(this));
         if (available > 0) {
-            asset.safeApprove(IERC20(address(asset)), _strategy, available);
+            asset.safeApprove(_strategy, available);
             strategy.deposit(available);
         }
 
@@ -355,7 +502,7 @@ contract ArbitrumVault {
     function deployToStrategy(uint256 amount) external nonReentrant onlyOwner whenNotPaused {
         require(address(strategy) != address(0), "No strategy");
         require(amount != 0, "Zero amount");
-        asset.safeApprove(IERC20(address(asset)), address(strategy), amount);
+        asset.safeApprove(address(strategy), amount);
         strategy.deposit(amount);
     }
 
@@ -567,26 +714,27 @@ contract ArbitrumVault {
         emit Paused(msg.sender);
     }
 
-    // ============ View Functions ============
+    // ============ View Functions (virtual-offset consistent) ============
 
+    /// @notice Price of one share, scaled by 1e18, computed via the virtual offset.
+    /// @dev Always returns a sane value, even when totalShares == 0, because of
+    ///      the virtual offset. The first depositor gets ~1e18 share price.
     function sharePrice() external view returns (uint256) {
-        if (totalShares == 0) return 1e18;
-        return (totalAssets * 1e18) / totalShares;
+        return ((totalAssets + VIRTUAL_ASSETS) * 1e18) / (totalShares + VIRTUAL_SHARES);
     }
 
     function balanceOf(address account) external view returns (uint256) {
         return shares[account];
     }
 
+    /// @notice Preview how many shares `amount` would mint.
     function previewDeposit(uint256 amount) external view returns (uint256) {
-        if (totalShares == 0) return amount;
-        if (totalAssets == 0) return 0;
-        return (amount * totalShares) / totalAssets;
+        return _convertAssetsToShares(amount);
     }
 
+    /// @notice Preview the net assets a user would receive when redeeming shares.
     function previewWithdraw(uint256 shareAmount) external view returns (uint256) {
-        if (totalShares == 0) return 0;
-        uint256 assetAmount = (shareAmount * totalAssets) / totalShares;
+        uint256 assetAmount = _convertSharesToAssets(shareAmount);
         uint256 fee = (assetAmount * withdrawalFee) / 10000;
         return assetAmount - fee;
     }

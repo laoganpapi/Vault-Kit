@@ -9,3 +9,12 @@ coverage/
 
 # Claude Code personal settings — never commit
 .claude/settings.local.json
+
+# Hardhat build artifacts
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+
+# Foundry build artifacts
+contracts/out/
+contracts/forge-cache/

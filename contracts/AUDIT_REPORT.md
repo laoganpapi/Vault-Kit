@@ -6,11 +6,11 @@
 
 | Property | Value |
 |----------|-------|
-| **Date** | 4/12/2026, 9:36:32 PM |
+| **Date** | 4/12/2026, 10:01:45 PM |
 | **Engine Version** | 1.0.0 |
 | **Files Analyzed** | 1 |
 | **Contracts Analyzed** | 5 |
-| **Lines of Code** | 491 |
+| **Lines of Code** | 622 |
 
 ## Security Score
 
@@ -34,7 +34,7 @@
 
 | File | Contracts | Lines | Findings |
 |------|-----------|-------|----------|
-| `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol` | IERC20, IStrategy, AggregatorV3Interface, SafeERC20, ArbitrumVault | 491 | 6 |
+| `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol` | IERC20, IStrategy, AggregatorV3Interface, SafeERC20, ArbitrumVault | 622 | 6 |
 
 ## Detailed Findings
 
@@ -47,7 +47,7 @@
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:444` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:591` |
 
 **Description:**
 
@@ -56,12 +56,12 @@ Privileged function pause() can freeze/unfreeze all protocol operations. This is
 **Code:**
 
 ```solidity
-443 | 
-444 |     function pause() external onlyGuardian {
-445 |         paused = true;
-446 |         emit Paused(msg.sender);
-447 |     }
-448 | 
+590 | 
+591 |     function pause() external onlyGuardian {
+592 |         paused = true;
+593 |         emit Paused(msg.sender);
+594 |     }
+595 | 
 ```
 
 **Recommendation:**
@@ -81,7 +81,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:449` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:596` |
 
 **Description:**
 
@@ -90,12 +90,12 @@ Privileged function unpause() can freeze/unfreeze all protocol operations. This 
 **Code:**
 
 ```solidity
-448 | 
-449 |     function unpause() external onlyOwner {
-450 |         paused = false;
-451 |         emit Unpaused(msg.sender);
-452 |     }
-453 | 
+595 | 
+596 |     function unpause() external onlyOwner {
+597 |         paused = false;
+598 |         emit Unpaused(msg.sender);
+599 |     }
+600 | 
 ```
 
 **Recommendation:**
@@ -115,7 +115,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:499` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:646` |
 
 **Description:**
 
@@ -124,14 +124,14 @@ Privileged function setFeeRecipient() can modify critical protocol parameters. T
 **Code:**
 
 ```solidity
-498 | 
-499 |     function setFeeRecipient(address _recipient) external onlyOwner {
-500 |         require(_recipient != address(0), "Zero address");
-501 |         address oldRecipient = feeRecipient;
-502 |         feeRecipient = _recipient;
-503 |         emit FeeRecipientUpdated(oldRecipient, _recipient);
-504 |     }
-505 | 
+645 | 
+646 |     function setFeeRecipient(address _recipient) external onlyOwner {
+647 |         require(_recipient != address(0), "Zero address");
+648 |         address oldRecipient = feeRecipient;
+649 |         feeRecipient = _recipient;
+650 |         emit FeeRecipientUpdated(oldRecipient, _recipient);
+651 |     }
+652 | 
 ```
 
 **Recommendation:**
@@ -151,7 +151,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:513` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:660` |
 
 **Description:**
 
@@ -160,13 +160,13 @@ Privileged function transferOwnership() can transfer ownership to a new address.
 **Code:**
 
 ```solidity
-512 | 
-513 |     function transferOwnership(address _newOwner) external onlyOwner {
-514 |         require(_newOwner != address(0), "Zero address");
-515 |         pendingOwner = _newOwner;
-516 |         emit OwnershipTransferStarted(owner, _newOwner);
-517 |     }
-518 | 
+659 | 
+660 |     function transferOwnership(address _newOwner) external onlyOwner {
+661 |         require(_newOwner != address(0), "Zero address");
+662 |         pendingOwner = _newOwner;
+663 |         emit OwnershipTransferStarted(owner, _newOwner);
+664 |     }
+665 | 
 ```
 
 **Recommendation:**
@@ -186,7 +186,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:527` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:674` |
 
 **Description:**
 
@@ -195,12 +195,12 @@ Privileged function setWhitelistEnabled() can modify access permissions. This is
 **Code:**
 
 ```solidity
-526 | 
-527 |     function setWhitelistEnabled(bool _enabled) external onlyOwner {
-528 |         whitelistEnabled = _enabled;
-529 |         emit WhitelistEnabledUpdated(_enabled);
-530 |     }
-531 | 
+673 | 
+674 |     function setWhitelistEnabled(bool _enabled) external onlyOwner {
+675 |         whitelistEnabled = _enabled;
+676 |         emit WhitelistEnabledUpdated(_enabled);
+677 |     }
+678 | 
 ```
 
 **Recommendation:**
@@ -220,7 +220,7 @@ Consider implementing:
 | **Severity** | INFORMATIONAL |
 | **Confidence** | high |
 | **Category** | Centralization Risk |
-| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:547` |
+| **Location** | `/home/user/Vault-Kit/contracts/src/ArbitrumVault.sol:694` |
 
 **Description:**
 
@@ -229,30 +229,30 @@ Privileged function emergencyWithdraw() can drain all funds from the contract. T
 **Code:**
 
 ```solidity
-546 | 
-547 |     function emergencyWithdraw() external nonReentrant onlyOwner {
-548 |         // CEI: set state BEFORE external calls
-549 |         emergencyMode = true;
-550 |         paused = true;
-551 | 
-552 |         // Pull everything from strategy
-553 |         if (address(strategy) != address(0)) {
-554 |             uint256 balance = strategy.balanceOf();
-555 |             if (balance > 0) {
-556 |                 strategy.withdraw(balance);
-557 |             }
-558 |         }
-559 | 
-560 |         // Send all assets to owner
-561 |         uint256 total = asset.balanceOf(address(this));
-562 |         if (total > 0) {
-563 |             asset.safeTransfer(owner, total);
-564 |         }
-565 | 
-566 |         emit EmergencyModeSet(true);
-567 |         emit Paused(msg.sender);
-568 |     }
-569 | 
+693 | 
+694 |     function emergencyWithdraw() external nonReentrant onlyOwner {
+695 |         // CEI: set state BEFORE external calls
+696 |         emergencyMode = true;
+697 |         paused = true;
+698 | 
+699 |         // Pull everything from strategy
+700 |         if (address(strategy) != address(0)) {
+701 |             uint256 balance = strategy.balanceOf();
+702 |             if (balance > 0) {
+703 |                 strategy.withdraw(balance);
+704 |             }
+705 |         }
+706 | 
+707 |         // Send all assets to owner
+708 |         uint256 total = asset.balanceOf(address(this));
+709 |         if (total > 0) {
+710 |             asset.safeTransfer(owner, total);
+711 |         }
+712 | 
+713 |         emit EmergencyModeSet(true);
+714 |         emit Paused(msg.sender);
+715 |     }
+716 | 
 ```
 
 **Recommendation:**

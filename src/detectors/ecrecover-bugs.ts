@@ -157,13 +157,20 @@ export class EcrecoverBugsDetector extends BaseDetector {
   }
 
   private checksSMalleability(body: any): boolean {
-    // Look for the characteristic constant: 0x7FFF... or references to the curve order constant
+    // Look for the characteristic constant: 0x7FFF... or a reference to a
+    // known curve-order constant by name. Real-world implementations vary
+    // between an inline literal and a named bytes32 constant.
     const src = JSON.stringify(body);
     // Upper-half curve order start: 7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0
     if (/7fff_?ffff_?ffff_?ffff_?ffff_?ffff_?ffff_?ffff_?5d57_?6e73_?57a4_?501d_?dfe9_?2f46_?681b_?20a0/i.test(src)) {
       return true;
     }
     if (/0x7fff[fF0-9]{60,}/.test(src)) return true;
+
+    // Named-constant references — match common naming conventions
+    if (/secp256k1_?half|half_?curve_?order|low_?s|low_?half_?order|max_?s|n_?div_?2/i.test(src)) {
+      return true;
+    }
     return false;
   }
 }

@@ -86,6 +86,17 @@ export class CentralizationRiskDetector extends BaseDetector {
 
         if (!hasAccessControl) continue;
 
+        // If the access control is a "contract-controlled" modifier (e.g., onlyVault,
+        // onlyStrategy, onlyRouter), the caller is another contract held in an
+        // immutable address, not an EOA. This is structurally different from a
+        // single-EOA admin and should not be flagged as centralization risk —
+        // the upstream contract gets its own audit.
+        const isContractGated = fn.modifiers.some((m: string) =>
+          ['onlyvault', 'onlystrategy', 'onlyrouter', 'onlyfactory', 'onlybridge', 'onlyrelayer']
+            .includes(m.toLowerCase())
+        );
+        if (isContractGated) continue;
+
         for (const pattern of CentralizationRiskDetector.PRIVILEGE_PATTERNS) {
           if (pattern.namePattern.test(fn.name)) {
             privilegedFunctions.push({ fn, risk: pattern.risk, severity: pattern.severity });

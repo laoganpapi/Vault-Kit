@@ -106,36 +106,61 @@ export class TimestampDependenceDetector extends BaseDetector {
   }
 
   /**
-   * Recognize the standard time-lock pattern:
-   *   block.timestamp >= someTime + delay
-   *   block.timestamp <= someTime + delay
-   *   block.timestamp - someTime >= delay
-   *   block.timestamp - someTime < delay
-   * The defining feature is that one side of the comparison is a binary
-   * operation between two terms (a stored timestamp + a delay), which means
-   * the check tolerates the ~15-second skew by design — no auditor cares about
-   * timestamps being off by 15s when the lock period is in minutes/hours/days.
+   * Recognize the standard time-lock / deadline patterns that are immune
+   * to ~15-second validator timestamp skew:
    *
-   * We deliberately do NOT skip the bare `block.timestamp > X` form where X is
-   * a single identifier or literal — that pattern can still be attack-relevant
-   * (e.g., auctions ending at a specific second).
+   *   Pattern 1: block.timestamp >= someTime + delay
+   *              block.timestamp <= someTime + delay
+   *              (one operand is a binary +/- expression — a stored time
+   *               plus a delay, or a deadline minus a buffer)
+   *
+   *   Pattern 2: (block.timestamp - X) <op> Y
+   *              (the timestamp is wrapped in a subtraction and compared
+   *               against a delay constant)
+   *
+   *   Pattern 3: block.timestamp <= deadline
+   *              block.timestamp <  deadline
+   *              (where the other operand is named "deadline", "expiry",
+   *               "expir*", "validUntil", "endtime", "lockuntil", etc.
+   *               — these are explicit deadline checks where 15s tolerance
+   *               is irrelevant by design)
+   *
+   * We deliberately do NOT skip a bare `block.timestamp > X` form where X is
+   * a generic identifier — that pattern can still be attack-relevant
+   * (e.g., auctions ending at a specific second or randomness seeds).
    */
   private isTimeLockPattern(parent: any): boolean {
     const left = parent.left;
     const right = parent.right;
 
-    // Pattern 1: block.timestamp <op> (a + b) — the other operand is a sum
+    // Pattern 1: block.timestamp <op> (a + b) — the other operand is a sum/diff
     const otherSide = this.isBlockTimestamp(left) ? right : (this.isBlockTimestamp(right) ? left : null);
     if (otherSide?.type === 'BinaryOperation' && (otherSide.operator === '+' || otherSide.operator === '-')) {
       return true;
     }
 
-    // Pattern 2: (block.timestamp - X) <op> Y — the timestamp is wrapped in a subtraction
-    // and compared against a delay constant/variable
+    // Pattern 2: (block.timestamp - X) <op> Y
     const wrappedSide = (left?.type === 'BinaryOperation' && left.operator === '-' && this.containsBlockTimestamp(left))
       ? left
       : ((right?.type === 'BinaryOperation' && right.operator === '-' && this.containsBlockTimestamp(right)) ? right : null);
     if (wrappedSide) return true;
+
+    // Pattern 3: block.timestamp <op> deadline-named identifier
+    if (otherSide?.type === 'Identifier') {
+      const name = otherSide.name.toLowerCase();
+      if (
+        name.includes('deadline') ||
+        name.includes('expiry') ||
+        name.includes('expir') ||
+        name.includes('validuntil') ||
+        name.includes('endtime') ||
+        name.includes('lockuntil') ||
+        name === 'cutoff' ||
+        name === 'maturity'
+      ) {
+        return true;
+      }
+    }
 
     return false;
   }

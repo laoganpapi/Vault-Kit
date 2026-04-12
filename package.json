@@ -1,7 +1,7 @@
 {
   "name": "vault-kit",
   "version": "1.0.0",
-  "description": "Enterprise-grade smart contract security auditor. Static analysis for Solidity with 30 vulnerability detectors covering reentrancy, access control, flash loans, oracle manipulation, share inflation, MEV, and more. evmbench-aligned benchmark mode for HIGH-severity CI gating.",
+  "description": "Enterprise-grade smart contract security auditor. Static analysis for Solidity with 35 vulnerability detectors covering reentrancy, access control, flash loans, oracle manipulation, share inflation, MEV, and more. evmbench-aligned benchmark mode for HIGH-severity CI gating.",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "bin": {
@@ -19,8 +19,12 @@
     "start": "node dist/src/cli.js",
     "audit": "node dist/src/cli.js",
     "test": "node --test dist/test/**/*.test.js",
+    "test:detectors": "node --test dist/test/**/*.test.js",
+    "test:contracts": "hardhat test",
+    "test:all": "npm run build && npm run test:detectors && npm run test:contracts",
+    "compile:contracts": "hardhat compile",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist contracts/cache contracts/artifacts",
     "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "keywords": [
@@ -52,7 +56,18 @@
     "@solidity-parser/parser": "^0.18.0"
   },
   "devDependencies": {
+    "@ethereumjs/common": "^4.4.0",
+    "@ethereumjs/tx": "^5.4.0",
+    "@ethereumjs/util": "^9.1.0",
+    "@ethereumjs/vm": "^7.2.1",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.0",
+    "chai": "^4.5.0",
+    "ethers": "^6.16.0",
+    "hardhat": "^2.28.6",
+    "solc": "^0.8.20",
     "typescript": "^5.3.0"
   },
   "engines": {
