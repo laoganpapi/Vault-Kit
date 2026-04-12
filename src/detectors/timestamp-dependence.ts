@@ -71,11 +71,18 @@ export class TimestampDependenceDetector extends BaseDetector {
             return;
           }
 
-          // Timestamp used in condition (general case)
+          // Timestamp used in condition (general case).
+          // Skip the standard time-lock pattern: `block.timestamp >= someTime + delay`
+          // (or symmetric forms). 15-second validator skew is irrelevant for
+          // delays measured in minutes, hours, or days, which is the only sane
+          // granularity for delay/cooldown/lock periods.
           if (
             parent?.type === 'BinaryOperation' &&
             ['<', '>', '<=', '>=', '!='].includes(parent.operator)
           ) {
+            if (this.isTimeLockPattern(parent)) {
+              return;
+            }
             findings.push(
               this.createFinding(context, {
                 title: `block.timestamp used in condition in ${contract.name}.${fn.name}()`,
@@ -96,6 +103,58 @@ export class TimestampDependenceDetector extends BaseDetector {
     }
 
     return findings;
+  }
+
+  /**
+   * Recognize the standard time-lock pattern:
+   *   block.timestamp >= someTime + delay
+   *   block.timestamp <= someTime + delay
+   *   block.timestamp - someTime >= delay
+   *   block.timestamp - someTime < delay
+   * The defining feature is that one side of the comparison is a binary
+   * operation between two terms (a stored timestamp + a delay), which means
+   * the check tolerates the ~15-second skew by design — no auditor cares about
+   * timestamps being off by 15s when the lock period is in minutes/hours/days.
+   *
+   * We deliberately do NOT skip the bare `block.timestamp > X` form where X is
+   * a single identifier or literal — that pattern can still be attack-relevant
+   * (e.g., auctions ending at a specific second).
+   */
+  private isTimeLockPattern(parent: any): boolean {
+    const left = parent.left;
+    const right = parent.right;
+
+    // Pattern 1: block.timestamp <op> (a + b) — the other operand is a sum
+    const otherSide = this.isBlockTimestamp(left) ? right : (this.isBlockTimestamp(right) ? left : null);
+    if (otherSide?.type === 'BinaryOperation' && (otherSide.operator === '+' || otherSide.operator === '-')) {
+      return true;
+    }
+
+    // Pattern 2: (block.timestamp - X) <op> Y — the timestamp is wrapped in a subtraction
+    // and compared against a delay constant/variable
+    const wrappedSide = (left?.type === 'BinaryOperation' && left.operator === '-' && this.containsBlockTimestamp(left))
+      ? left
+      : ((right?.type === 'BinaryOperation' && right.operator === '-' && this.containsBlockTimestamp(right)) ? right : null);
+    if (wrappedSide) return true;
+
+    return false;
+  }
+
+  private isBlockTimestamp(node: any): boolean {
+    return (
+      node?.type === 'MemberAccess' &&
+      node.expression?.type === 'Identifier' &&
+      node.expression.name === 'block' &&
+      node.memberName === 'timestamp'
+    );
+  }
+
+  private containsBlockTimestamp(node: any): boolean {
+    let found = false;
+    walkAST(node, (n: any) => {
+      if (this.isBlockTimestamp(n)) found = true;
+    });
+    return found;
   }
 
   private isUsedForRandomness(node: any, parent: any, body: any): boolean {

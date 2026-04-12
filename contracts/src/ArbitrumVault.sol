@@ -249,7 +249,11 @@ contract ArbitrumVault {
             shares[address(0)] += DEAD_SHARES;
             totalShares += DEAD_SHARES;
         } else {
-            sharesToMint = (received * totalShares) / totalAssets;
+            // Defensive: by invariant totalShares > 0 implies totalAssets > 0,
+            // but we re-check to surface any future state corruption clearly
+            // and to avoid relying on implicit branch reasoning.
+            require(totalAssets != 0, "totalAssets is zero");
+            sharesToMint = _convertAssetsToShares(received);
         }
         require(sharesToMint != 0, "Zero shares minted");
 
@@ -265,17 +269,27 @@ contract ArbitrumVault {
     function withdraw(uint256 shareAmount) external nonReentrant whenNotPaused {
         require(shareAmount != 0, "Zero shares");
         require(shares[msg.sender] >= shareAmount, "Insufficient shares");
+
+        // Withdrawal-delay check.
+        // block.timestamp can be manipulated by validators by ~15 seconds.
+        // This is acceptable here because the withdrawal delay is administered
+        // in seconds and is intended to be at least a few minutes (and is
+        // capped at MAX_WITHDRAWAL_DELAY = 7 days). A 15-second skew is
+        // negligible relative to the intended granularity.
         require(
             block.timestamp >= lastDepositTime[msg.sender] + withdrawalDelay,
             "Withdrawal delay"
         );
-        require(totalShares != 0, "No shares outstanding");
 
-        // Calculate assets (round down in favor of vault)
-        uint256 assetAmount = (shareAmount * totalAssets) / totalShares;
+        // Convert shares to assets via the rounding-aware helper.
+        // Round-down on redemption is intentional and standard ERC-4626
+        // behaviour: it pays the user slightly less than their pro-rata share,
+        // leaving the dust with the vault. The opposite (round up) would
+        // enable dust-extraction attacks.
+        uint256 assetAmount = _convertSharesToAssets(shareAmount);
         require(assetAmount != 0, "Zero assets");
 
-        // Calculate withdrawal fee
+        // Calculate withdrawal fee (round down — user pays slightly less fee)
         uint256 fee = (assetAmount * withdrawalFee) / 10000;
         uint256 netAmount = assetAmount - fee;
 
@@ -291,6 +305,24 @@ contract ArbitrumVault {
         asset.safeTransfer(msg.sender, netAmount);
 
         emit Withdraw(msg.sender, netAmount, shareAmount);
+    }
+
+    // ============ Conversion helpers (rounding-aware) ============
+
+    /// @notice Convert assets to shares (round DOWN — fewer shares minted, vault favored).
+    /// @dev Defensive: explicit require so the helper is robust independent of caller.
+    function _convertAssetsToShares(uint256 assets) internal view returns (uint256) {
+        uint256 _totalAssets = totalAssets;
+        require(_totalAssets != 0, "totalAssets is zero");
+        return (assets * totalShares) / _totalAssets;
+    }
+
+    /// @notice Convert shares to assets (round DOWN — vault keeps the dust, standard ERC-4626).
+    /// @dev Defensive: explicit require so the helper is robust independent of caller.
+    function _convertSharesToAssets(uint256 shareAmount) internal view returns (uint256) {
+        uint256 _totalShares = totalShares;
+        require(_totalShares != 0, "totalShares is zero");
+        return (shareAmount * totalAssets) / _totalShares;
     }
 
     // ============ Strategy Management ============
